@@ -1,3 +1,9 @@
+//! IPSMAP palette lookup format and baking math.
+//!
+//! IPSMAP stores self-contained palette metadata plus precomputed altered and
+//! direct RGB-to-palette-index tables, so runtime quantization is a single
+//! lookup instead of a nearest-color search.
+
 use std::{
     fs,
     io::Write,

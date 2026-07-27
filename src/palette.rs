@@ -1,3 +1,8 @@
+//! Palette-indexed frame encoder and transport batching.
+//!
+//! The encoder converts raw indexed frames into compact tile packets, choosing
+//! keyframes, deltas, RLE, and cached tiles based on the previous framebuffer.
+
 use crate::{
     frames::{RawFrame, RawFramePixels},
     gpu_lookup::build_lookup_gpu_with_progress,
@@ -661,8 +666,8 @@ impl IndexedPixelEncoder {
         if width != height
             || width == 0
             || width > u8::MAX as u32 + 1
-            || width as usize % TILE_SIZE != 0
-            || height as usize % TILE_SIZE != 0
+            || !(width as usize).is_multiple_of(TILE_SIZE)
+            || !(height as usize).is_multiple_of(TILE_SIZE)
         {
             return Err(
                 "IPSC frames must be square, 8-aligned, and no larger than 256x256".to_owned(),
@@ -685,7 +690,8 @@ impl IndexedPixelEncoder {
             .as_ref()
             .expect("header initialized for current resolution")
             .clone();
-        let is_keyframe = self.previous.is_none() || self.frame_index % KEYFRAME_INTERVAL == 0;
+        let is_keyframe =
+            self.previous.is_none() || self.frame_index.is_multiple_of(KEYFRAME_INTERVAL);
         let frame_index = self.frame_index;
 
         let framebuffer = current.clone();
@@ -1090,12 +1096,9 @@ fn in_srgb_gamut(r: f32, g: f32, b: f32) -> bool {
     r.is_finite()
         && g.is_finite()
         && b.is_finite()
-        && r >= -EPSILON
-        && r <= 1.0 + EPSILON
-        && g >= -EPSILON
-        && g <= 1.0 + EPSILON
-        && b >= -EPSILON
-        && b <= 1.0 + EPSILON
+        && (-EPSILON..=1.0 + EPSILON).contains(&r)
+        && (-EPSILON..=1.0 + EPSILON).contains(&g)
+        && (-EPSILON..=1.0 + EPSILON).contains(&b)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

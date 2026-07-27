@@ -1,4 +1,6 @@
-use direct_stream_game::{CustomHostBranding, CustomHostLayout, export_static_palette_stream_page};
+//! Exports the static custom-host browser player.
+
+use pixel_stream::{CustomHostBranding, CustomHostLayout, export_static_palette_stream_page};
 use std::{env, path::PathBuf};
 
 fn main() -> Result<(), String> {
@@ -6,10 +8,10 @@ fn main() -> Result<(), String> {
     let mut branding = CustomHostBranding::default();
     let mut layout = CustomHostLayout::default();
     let mut args = env::args().skip(1).peekable();
-    if let Some(first) = args.peek() {
-        if !first.starts_with("--") {
-            backend = args.next().unwrap_or(backend);
-        }
+    if let Some(first) = args.peek()
+        && !first.starts_with("--")
+    {
+        backend = args.next().unwrap_or(backend);
     }
     while let Some(arg) = args.next() {
         match arg.as_str() {

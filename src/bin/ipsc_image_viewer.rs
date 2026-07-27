@@ -1,3 +1,5 @@
+//! Tiny local image viewer used while authoring palette and IPSI assets.
+
 use std::{
     env, fs,
     io::{Read, Write},

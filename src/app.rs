@@ -1,3 +1,8 @@
+//! PixelStream app construction.
+//!
+//! This builds the Bevy app shell, shared resources, stream server, render
+//! target, and default plugins before a downstream game attaches its own scene.
+
 use crate::{
     DirectStreamPlugin,
     audio::{CustomAudioPacketHub, DirectStreamAudioTarget, start_custom_audio_packet_pump},
@@ -22,7 +27,13 @@ use crate::{
     stats::SharedStats,
     stream_control::{CustomStreamState, StreamControl},
 };
-use bevy::{audio::AudioPlugin, prelude::*, window::PresentMode, winit::WinitSettings};
+use bevy::{
+    audio::AudioPlugin,
+    log::{DEFAULT_FILTER, LogPlugin},
+    prelude::*,
+    window::PresentMode,
+    winit::WinitSettings,
+};
 use std::num::NonZeroU32;
 
 pub fn direct_stream_app() -> App {
@@ -167,6 +178,10 @@ pub fn direct_stream_app() -> App {
             DefaultPlugins
                 .build()
                 .disable::<AudioPlugin>()
+                .set(LogPlugin {
+                    filter: format!("{DEFAULT_FILTER},bevy_ecs::system::system=error"),
+                    ..default()
+                })
                 .set(ImagePlugin::default_nearest())
                 .set(WindowPlugin {
                     primary_window: Some(primary_window),

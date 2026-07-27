@@ -1,3 +1,8 @@
+//! GPU-assisted IPSMAP lookup baking.
+//!
+//! The full RGB cube is large enough that a compute pass is useful when a GPU is
+//! available; CPU paths remain for tests and environments without the feature.
+
 use crate::palette_lut::{LUT_ENTRY_COUNT, PaletteConfig};
 use std::sync::mpsc;
 use wgpu::util::DeviceExt;
@@ -12,7 +17,7 @@ pub(crate) fn build_lookup_gpu_with_progress(
     mut progress: impl FnMut(usize),
 ) -> Result<Vec<u8>, String> {
     progress(1);
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
@@ -93,8 +98,8 @@ pub(crate) fn build_lookup_gpu_with_progress(
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("palette_lookup_pipeline_layout"),
-        bind_group_layouts: &[&layout],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("palette_lookup_pipeline"),

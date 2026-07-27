@@ -1,6 +1,6 @@
-# Direct Stream Game
+# PixelStream
 
-Direct Stream Game is a Bevy streaming library for games that are played through
+PixelStream is a Bevy streaming library for games that are played through
 a custom browser host. It renders your game to an offscreen stream target, reads
 the final frame back from the GPU, palette-encodes it, and serves it through a
 small local web server with audio, chat, panels, and click input.
@@ -8,9 +8,16 @@ small local web server with audio, chat, panels, and click input.
 The repository binary is a demo. The reusable library is exposed from
 `src/lib.rs`.
 
+Focused API docs:
+
+- [Chat API](docs/CHAT_API.md)
+- [Overlays And Sprites](docs/OVERLAYS_AND_SPRITES.md)
+- [Stream Settings](docs/STREAM_SETTINGS.md)
+- [Generic Settings Crate](crates/pixel_stream_settings/README.md)
+
 ## What It Provides
 
-- Bevy `0.18.1` app shell with a dedicated stream render target.
+- Bevy `0.19` app shell with a dedicated stream render target.
 - GPU readback with bounded in-flight capture and fixed-size frame batching.
 - GPU palette indexing with required `.ipsmap` lookup textures in custom-host mode.
 - Indexed Pixel Stream Codec (`IPSC`) custom-host video.
@@ -27,13 +34,13 @@ The repository binary is a demo. The reusable library is exposed from
 - Demo scene with looping music, `!boing` sound effect, and drag-and-drop video
   background playback.
 
-There is no Twitch/RTMP path. The library now specializes in the custom browser
-host.
+There is no external chat or RTMP path. The library specializes in the custom
+browser host.
 
 ## Requirements
 
 - Rust stable, currently verified with `rustc 1.95.0`.
-- Bevy `0.18.1`.
+- Bevy `0.19`.
 - Windows/MSVC receives the most testing.
 - Dynamic FFmpeg libraries with headers/import libs available at build time and
   DLLs available at runtime.
@@ -63,13 +70,13 @@ Then keep vcpkg on the environment when building/running:
 ```powershell
 $env:VCPKG_ROOT = "C:\vcpkg"
 $env:PATH = "C:\vcpkg\installed\x64-windows\bin;$env:PATH"
-cargo run --bin DirectStreamGame -- --stats-window --custom-host
+cargo run --bin PixelStream -- --stats-window --custom-host
 ```
 
 ## Running The Demo
 
 ```powershell
-cargo run --bin DirectStreamGame -- --stats-window --custom-host
+cargo run --bin PixelStream -- --stats-window --custom-host
 ```
 
 Then press **Start** in the stats window and open:
@@ -118,36 +125,176 @@ MP4 container, H.264 video, yuv420p, small resolution, 24/25/30 fps
 Video audio is ignored. The video loops and is scaled into the stream render
 target. This is demo-only code, not part of the streaming library API.
 
+## Step-By-Step PixelStream Setup
+
+Use this checklist when adding PixelStream to a new Bevy game or bringing an
+existing game onto the custom browser host.
+
+1. Install the native prerequisites.
+
+   Set up Rust/MSVC and the dynamic FFmpeg libraries described in
+   [FFmpeg Setup On Windows](#ffmpeg-setup-on-windows). Keep the FFmpeg DLL
+   directory on `PATH` when building or running the game.
+
+2. Add PixelStream to the downstream game's `Cargo.toml`.
+
+   ```toml
+   [dependencies]
+   bevy = "0.19"
+   pixel_stream = { package = "PixelStream", git = "https://github.com/HumanBeanGames/PixelStream" }
+   ```
+
+   During local development, use a path dependency instead:
+
+   ```toml
+   pixel_stream = { package = "PixelStream", path = "../PixelStream" }
+   ```
+
+3. Build your app from PixelStream's app shell.
+
+   ```rust
+   use bevy::prelude::*;
+   use pixel_stream::{pixel_stream_app, PixelStreamSet};
+
+   fn main() {
+       pixel_stream_app()
+           .add_systems(Startup, setup.after(PixelStreamSet::Setup))
+           .add_systems(Update, update)
+           .run();
+   }
+
+   fn setup() {}
+   fn update() {}
+   ```
+
+   Schedule setup after `PixelStreamSet::Setup` whenever it needs the stream
+   target, stream camera, direct text, direct sprites, or custom-host resources.
+
+4. Render the game into `PixelStreamTarget.image`.
+
+   PixelStream creates a default 2D stream camera. If your game uses that camera,
+   attach UI with `UiTargetCamera(target.camera)` and spawn visible content on
+   render layer `0`.
+
+   If your game needs its own 2D or 3D camera, create that camera after
+   `PixelStreamSet::Setup`, render it to `PixelStreamTarget.image`, and update
+   `PixelStreamTarget.camera` if your game replaces the provided camera. The
+   custom-host pipeline captures the stream image, not the normal desktop window.
+   A healthy stream that is pure black usually means the game is still rendering
+   only to the window camera.
+
+5. Add the optional PixelStream overlays you need.
+
+   - Use `DirectText` for text that must stay readable at tiny resolutions.
+   - Use `DirectWorldSprite` for small world-anchored sprites that should depth
+     test against the 3D scene.
+   - Use custom-host panels and overlays for browser-side UI outside the stream.
+   - Use `StreamCommandAppExt` and `StreamChatSender` for local browser chat and
+     command replies.
+
+6. Provide an IPSMAP palette lookup.
+
+   Custom-host mode requires a `.ipsmap` file. Put it in the game working
+   directory, commonly as `palette.ipsmap`, or pass it explicitly:
+
+   ```powershell
+   cargo run -- --stats-window --custom-host --palette-lookup=palette.ipsmap
+   ```
+
+   Use the palette lab or `ipsc_build_palette_lut` tool to create IPSMAP files.
+   Runtime palette TOML fallback is not part of the custom-host path.
+
+7. Run and test locally.
+
+   ```powershell
+   cargo run -- --stats-window --custom-host --palette-lookup=palette.ipsmap --stream-width=128 --stream-height=128 --stream-fps=30 --batch-size=30
+   ```
+
+   Press **Start** in the stats window, then open:
+
+   ```text
+   http://127.0.0.1:8080
+   ```
+
+   Confirm the stats show captured/read/encoded/sent frames, no unexpected drops,
+   and that the browser stream matches the preview.
+
+8. Add programmatic startup if the game should not require pressing Start.
+
+   ```rust
+   use bevy::prelude::*;
+   use pixel_stream::PixelStreamStartRequest;
+
+   fn auto_start(mut requests: MessageWriter<PixelStreamStartRequest>) {
+       requests.write(PixelStreamStartRequest::custom_host(128, 128, 30));
+   }
+   ```
+
+   Downstream games often wrap this in their own quickstart JSON or command-line
+   flag so resolution, frame rate, and batch size can be stored together.
+
+9. Export the static browser player for hosting.
+
+   ```powershell
+   cargo run --bin ipsc_export_static_stream -- https://game.example.com --page-title "MY GAME" --header-title "MY GAME" --max-player-width 640 --minimizable-player
+   ```
+
+   This writes `dist/humanbeangames_stream/index.html` by default. For a custom
+   project, either deploy that generated folder or call
+   `export_static_palette_stream_page` from your own tooling.
+
+10. Put the backend behind a tunnel or reverse proxy.
+
+    The Rust game process listens on `127.0.0.1:8080`. For public hosting, expose
+    that local backend through a tunnel hostname such as `game.example.com`, and
+    host the static player on a separate static site such as
+    `stream.example.com`. Do not expose the raw Rust HTTP server directly to the
+    public internet without a real reverse-proxy/auth layer.
+
+11. Deploy the static player.
+
+    Upload the generated player folder to Cloudflare Workers Static Assets,
+    Cloudflare Pages Direct Upload, or another static host. The public player
+    will poll the backend `/status.json`, show **Not Online** while the game is
+    closed, and connect automatically when the local game process starts.
+
+12. Redeploy only the part that changed.
+
+    Browser/player changes require redeploying the static player. Rust-only
+    game/backend changes require rebuilding and restarting the local game
+    process. Palette-lab changes require redeploying the lab only if you host it
+    publicly.
+
 ## Using The Library
 
 Add the library to your game:
 
 ```toml
 [dependencies]
-bevy = "0.18.1"
-direct_stream_game = { package = "DirectStreamGame", git = "https://github.com/HumanBeanGames/DirectStreamGame" }
+bevy = "0.19"
+pixel_stream = { package = "PixelStream", git = "https://github.com/HumanBeanGames/PixelStream" }
 ```
 
 For local development, a path dependency also works:
 
 ```toml
-direct_stream_game = { path = "../DirectStreamGame" }
+pixel_stream = { path = "../PixelStream" }
 ```
 
-Use the direct-stream app shell instead of `App::new().add_plugins(DefaultPlugins)`:
+Use the pixel-stream app shell instead of `App::new().add_plugins(DefaultPlugins)`:
 
 ```rust
 use bevy::prelude::*;
-use direct_stream_game::{direct_stream_app, DirectStreamSet, DirectStreamTarget};
+use pixel_stream::{direct_stream_app, PixelStreamSet, PixelStreamTarget};
 
 fn main() {
     direct_stream_app()
-        .add_systems(Startup, setup.after(DirectStreamSet::Setup))
+        .add_systems(Startup, setup.after(PixelStreamSet::Setup))
         .add_systems(Update, update)
         .run();
 }
 
-fn setup(mut commands: Commands, target: Res<DirectStreamTarget>) {
+fn setup(mut commands: Commands, target: Res<PixelStreamTarget>) {
     commands
         .spawn((
             Node {
@@ -165,19 +312,19 @@ fn setup(mut commands: Commands, target: Res<DirectStreamTarget>) {
 fn update() {}
 ```
 
-Run startup systems after `DirectStreamSet::Setup` when they need
-`DirectStreamTarget` or the stream camera. Systems that do not depend on the
+Run startup systems after `PixelStreamSet::Setup` when they need
+`PixelStreamTarget` or the stream camera. Systems that do not depend on the
 stream target can be scheduled normally.
 
-Downstream systems can read `DirectStreamState` to pause live-only work while a
+Downstream systems can read `PixelStreamState` to pause live-only work while a
 custom-host stream is stopped:
 
 ```rust
 use bevy::prelude::*;
-use direct_stream_game::{DirectStreamMode, DirectStreamState};
+use pixel_stream::{PixelStreamMode, PixelStreamState};
 
-fn advance_world(time: Res<Time>, stream: Res<DirectStreamState>) {
-    if stream.mode == DirectStreamMode::CustomHost && !stream.active {
+fn advance_world(time: Res<Time>, stream: Res<PixelStreamState>) {
+    if stream.mode == PixelStreamMode::CustomHost && !stream.active {
         return;
     }
 
@@ -185,7 +332,7 @@ fn advance_world(time: Res<Time>, stream: Res<DirectStreamState>) {
 }
 ```
 
-`DirectStreamState` also exposes the current stream `width`, `height`, and
+`PixelStreamState` also exposes the current stream `width`, `height`, and
 `fps`. In custom-host mode these update when the stats-window Start button
 retargets the stream; Stop preserves the last dimensions and sets
 `active = false`.
@@ -194,23 +341,23 @@ Custom-host streams can also be started or stopped from game code with messages:
 
 ```rust
 use bevy::prelude::*;
-use direct_stream_game::DirectStreamStartRequest;
+use pixel_stream::PixelStreamStartRequest;
 
-fn auto_start(mut requests: MessageWriter<DirectStreamStartRequest>) {
-    requests.write(DirectStreamStartRequest::custom_host(128, 128, 30));
+fn auto_start(mut requests: MessageWriter<PixelStreamStartRequest>) {
+    requests.write(PixelStreamStartRequest::custom_host(128, 128, 30));
 }
 ```
 
-Read `DirectStreamControlResult` messages if you need to react to success or
+Read `PixelStreamControlResult` messages if you need to react to success or
 validation failures. The stats-window Start/End buttons use the same message
 path.
 
-Audio/video sync can be tuned with `DirectStreamAudioSyncConfig`:
+Audio/video sync can be tuned with `PixelStreamAudioSyncConfig`:
 
 ```rust
-use direct_stream_game::{AudioSyncMode, DirectStreamAudioSyncConfig};
+use pixel_stream::{AudioSyncMode, PixelStreamAudioSyncConfig};
 
-app.insert_resource(DirectStreamAudioSyncConfig {
+app.insert_resource(PixelStreamAudioSyncConfig {
     mode: AudioSyncMode::MatchEstimatedVideoLatency,
     fixed_delay_ms: 1_000,
     extra_delay_ms: 0,
@@ -242,11 +389,11 @@ After:
 
 ```rust
 use bevy::prelude::*;
-use direct_stream_game::{direct_stream_app, DirectStreamSet};
+use pixel_stream::{direct_stream_app, PixelStreamSet};
 
 fn main() {
     direct_stream_app()
-        .add_systems(Startup, setup.after(DirectStreamSet::Setup))
+        .add_systems(Startup, setup.after(PixelStreamSet::Setup))
         .add_systems(Update, update)
         .run();
 }
@@ -254,20 +401,20 @@ fn main() {
 
 UI should be attached to the stream camera with `UiTargetCamera(target.camera)`.
 Camera-heavy 2D/3D games may need an adapter so their main camera renders to
-`DirectStreamTarget.image` or is replaced by the provided stream camera. The
+`PixelStreamTarget.image` or is replaced by the provided stream camera. The
 library should remain usable by 3D projects; the custom stream path consumes the
 final render target, not a specific 2D scene model.
 
 ## Stream Audio
 
 The app disables Bevy's normal speaker audio plugin. Audio is sent to the stream
-through `DirectStreamAudioTarget`.
+through `PixelStreamAudioTarget`.
 
 Simple clip playback:
 
 ```rust
 use bevy::prelude::*;
-use direct_stream_game::{PlayStreamSound, StreamAudioClip};
+use pixel_stream::{PlayStreamSound, StreamAudioClip};
 
 #[derive(Resource)]
 struct HitSound(Handle<StreamAudioClip>);
@@ -285,7 +432,7 @@ fn play_hit(sound: Res<HitSound>, mut sounds: MessageWriter<PlayStreamSound>) {
 
 You can also load WAV files with `StreamAudioClip::from_wav_file`. The mixer
 handles common WAV formats and caches the decode path per file. Lower-level
-audio engines can push samples directly into `DirectStreamAudioTarget` with
+audio engines can push samples directly into `PixelStreamAudioTarget` with
 `push_stereo_f32` or `push_mono_f32`.
 
 The stream target expects `48_000 Hz`, stereo, `f32` samples in `[-1.0, 1.0]`.
@@ -299,7 +446,7 @@ Register commands with `StreamCommandAppExt`.
 ```rust
 use bevy::ecs::system::In;
 use bevy::prelude::*;
-use direct_stream_game::{
+use pixel_stream::{
     direct_stream_app, StreamChatCommand, StreamChatSender, StreamCommandAppExt,
 };
 
@@ -355,7 +502,7 @@ stable display-name color derived from their identity hash.
 ```rust
 use std::time::Duration;
 use bevy::prelude::*;
-use direct_stream_game::{LocalChatEntryOptions, StreamChatSender};
+use pixel_stream::{LocalChatEntryOptions, StreamChatSender};
 
 fn reply(chat: Res<StreamChatSender>) {
     chat.send_local(
@@ -372,13 +519,21 @@ Chat colors accept safe `#RGB`, `#RRGGBB`, `rgb(r,g,b)`, `hsl(h s% l%)`, or a
 small named-color set. CSS classes are sanitized to short alphanumeric,
 underscore, or hyphen tokens before they reach the browser.
 
+Viewer-authored chat is moderated before it is echoed or dispatched as a
+command. The built-in baseline blocks links, a small profanity/slur list,
+messages faster than one every 5 seconds, and repeats of the same normalized
+message within 30 seconds. Rejected messages are not added to chat history and
+do not trigger command handlers; the viewer receives a short-lived private
+system warning instead. Moderation state is in-memory and scoped to the current
+app session plus viewer identity.
+
 The custom-host chat window is opt-in. Downstream apps request it with
 `CustomHostChatPanelHub`; otherwise the browser page does not create a chat
 panel or poll the chat feed.
 
 ```rust
 use bevy::prelude::*;
-use direct_stream_game::CustomHostChatPanelHub;
+use pixel_stream::CustomHostChatPanelHub;
 
 fn request_chat(chat_panel: Res<CustomHostChatPanelHub>) {
     chat_panel.show();
@@ -391,7 +546,7 @@ The browser page can be branded and sized by replacing the default resources
 before the app starts:
 
 ```rust
-use direct_stream_game::{CustomHostBranding, CustomHostLayout, direct_stream_app};
+use pixel_stream::{CustomHostBranding, CustomHostLayout, direct_stream_app};
 
 fn main() {
     direct_stream_app()
@@ -423,7 +578,7 @@ Downstream games can publish arbitrary side-panel text:
 
 ```rust
 use bevy::prelude::*;
-use direct_stream_game::{CustomHostPanelAnchor, CustomHostPanelHub};
+use pixel_stream::{CustomHostPanelAnchor, CustomHostPanelHub};
 
 fn update_panel(panels: Res<CustomHostPanelHub>) {
     panels.publish_text_at(
@@ -449,7 +604,7 @@ body without title/header chrome.
 For one-line route/status panels, use the helper style:
 
 ```rust
-use direct_stream_game::{CustomHostPanelStyle, PanelWhiteSpace};
+use pixel_stream::{CustomHostPanelStyle, PanelWhiteSpace};
 
 let style = CustomHostPanelStyle::headerless()
     .with_body_white_space(PanelWhiteSpace::NoWrap);
@@ -459,7 +614,7 @@ For panels that should wrap and grow with their content without scrollbars, use
 `PanelOverflowMode::WrapNoScroll` or the convenience helper:
 
 ```rust
-use direct_stream_game::CustomHostPanelStyle;
+use pixel_stream::CustomHostPanelStyle;
 
 let style = CustomHostPanelStyle::default()
     .wrap_no_scroll()
@@ -478,7 +633,7 @@ panel with the same app-level id.
 
 ```rust
 use bevy::prelude::*;
-use direct_stream_game::{
+use pixel_stream::{
     CustomHostPanel, CustomHostPanelAnchor, CustomHostPanelAudience, CustomHostPanelElement,
     CustomHostPanelElementStyle, CustomHostPanelHub, CustomHostPanelPage, PagedTextControls,
     PagedTextControlsPosition,
@@ -541,7 +696,7 @@ preserved across `/custom-panels` refreshes as long as the page still exists.
 
 ```rust
 use bevy::prelude::*;
-use direct_stream_game::CustomHostPanelAction;
+use pixel_stream::CustomHostPanelAction;
 
 fn handle_panel_actions(mut actions: MessageReader<CustomHostPanelAction>) {
     for action in actions.read() {
@@ -564,7 +719,7 @@ canvas without modifying the shared stream pixels:
 
 ```rust
 use bevy::prelude::*;
-use direct_stream_game::{
+use pixel_stream::{
     CustomHostOverlayElement, CustomHostOverlayHub, CustomHostPanelAudience,
     OverlayCoordinateSpace, OverlayElementKind, OverlayElementStyle,
 };
@@ -596,8 +751,8 @@ after GPU readback has produced CPU-writeable bytes and before the frame is sent
 to preview/custom-host encoders.
 
 ```rust
-use direct_stream_game::{
-    direct_stream_app, DirectStreamFrame, DirectStreamFrameAppExt,
+use pixel_stream::{
+    direct_stream_app, PixelStreamFrame, PixelStreamFrameAppExt,
 };
 
 fn main() {
@@ -606,7 +761,7 @@ fn main() {
         .run();
 }
 
-fn draw_overlay(mut frame: DirectStreamFrame) {
+fn draw_overlay(mut frame: PixelStreamFrame) {
     let width = frame.width();
     let row_bytes = frame.row_bytes();
     let pixels = frame.bgra_mut();
@@ -625,7 +780,7 @@ to an entity that already has `Transform` and `GlobalTransform`:
 
 ```rust
 use bevy::prelude::*;
-use direct_stream_game::{
+use pixel_stream::{
     DirectWorldSprite, SpriteDepthMode, SpriteFacing,
 };
 
@@ -648,7 +803,7 @@ fn spawn_caravan(mut commands: Commands, assets: Res<AssetServer>) {
 }
 ```
 
-The world anchor is projected through `DirectStreamTarget.camera`, snapped to an
+The world anchor is projected through `PixelStreamTarget.camera`, snapped to an
 integer stream pixel, and rendered at `pixel_size` in stream output pixels. The
 sprite is drawn before palette conversion and before `DirectText`, so text still
 lands on top.
@@ -670,38 +825,49 @@ sprites are synced each frame.
 Local custom host:
 
 ```powershell
-cargo run --bin DirectStreamGame -- --stats-window --custom-host
+cargo run --bin PixelStream -- --stats-window --custom-host
 ```
 
-Public hosting layout used by this project:
+PixelStream is split into two pieces:
+
+- the Rust game process, which runs on the machine hosting the live game and
+  serves the stream backend on `127.0.0.1:8080`;
+- a static browser player, which can be hosted on Cloudflare and talks to that
+  backend through a public tunnel hostname.
+
+The public hosting layout used by this project is:
 
 ```text
 humanbeangames.com
-  Cloudflare Pages landing page
+  Cloudflare static landing page
 
 stream.humanbeangames.com
-  Cloudflare Pages static player
+  Cloudflare static PixelStream player
 
 game.humanbeangames.com
   Cloudflare Tunnel to http://localhost:8080 on the machine running the game
 ```
 
-Export the static stream player:
+### Export The Static Player
+
+Regenerate the static player whenever the browser host changes: branding,
+layout, panel/chat/overlay behavior, audio/video client code, endpoint shape, or
+any generated `src/web.rs` page content.
 
 ```powershell
-cargo run --bin ipsc_export_static_stream
+cargo run --bin ipsc_export_static_stream -- https://game.humanbeangames.com --page-title MERCANTILE --header-title MERCANTILE --max-player-width 640 --minimizable-player
 ```
 
-The exporter accepts the same browser options for static hosting:
+This writes:
 
-```powershell
-cargo run --bin ipsc_export_static_stream -- https://game.humanbeangames.com --page-title MERCANTILE --header-title MERCANTILE --prefer-larger-player --max-player-width 1280 --minimizable-player
+```text
+dist/humanbeangames_stream/index.html
 ```
 
 Downstream tools can export the same page without invoking the CLI:
 
 ```rust
-use direct_stream_game::{
+use pixel_stream::{
     CustomHostBranding, CustomHostLayout, export_static_palette_stream_page,
 };
 
@@ -713,13 +879,62 @@ export_static_palette_stream_page(
 )?;
 ```
 
-Upload the contents of:
+Upload the contents of this directory, not the directory itself:
 
 ```text
 dist/humanbeangames_stream
 ```
 
-to the `stream.humanbeangames.com` Pages/Worker project.
+to the Cloudflare project that serves `stream.humanbeangames.com`.
+
+### Cloudflare Workers Static Assets
+
+Cloudflare's current static hosting path is Workers Static Assets. A minimal
+`wrangler.toml` for the stream player looks like this:
+
+```toml
+name = "mercantile-stream"
+compatibility_date = "2026-07-26"
+
+[assets]
+directory = "./dist/humanbeangames_stream"
+binding = "ASSETS"
+```
+
+Then deploy from the PixelStream repo:
+
+```powershell
+npx wrangler deploy
+```
+
+If the project uses `wrangler.jsonc`, the equivalent assets block is:
+
+```jsonc
+{
+  "name": "mercantile-stream",
+  "compatibility_date": "2026-07-26",
+  "assets": {
+    "directory": "./dist/humanbeangames_stream",
+    "binding": "ASSETS"
+  }
+}
+```
+
+The Worker custom domain should be `stream.humanbeangames.com`.
+
+### Cloudflare Pages Direct Upload
+
+Cloudflare Pages Direct Upload also works for this static player. After
+exporting, deploy the folder with Wrangler:
+
+```powershell
+npx wrangler pages deploy dist/humanbeangames_stream --project-name mercantile-stream
+```
+
+or upload the same folder through the Cloudflare dashboard. If you use Direct
+Upload, deploy the built folder; do not point Pages at the Rust source tree.
+
+### Landing Page And Lab
 
 Export the dummy landing page from:
 
@@ -727,8 +942,21 @@ Export the dummy landing page from:
 dist/humanbeangames
 ```
 
-The landing page embeds `https://stream.humanbeangames.com`. The static stream
-page talks to `https://game.humanbeangames.com` for:
+Deploy it only when the landing page changes. It embeds
+`https://stream.humanbeangames.com`.
+
+Deploy the palette lab from:
+
+```text
+dist/ipsc_lab
+```
+
+only when the hosted lab changes or you want public tools to pick up a new lab
+build.
+
+### Backend And Tunnel
+
+The static stream page talks to `https://game.humanbeangames.com` for:
 
 ```text
 /status.json
@@ -740,9 +968,31 @@ page talks to `https://game.humanbeangames.com` for:
 /stream-click
 ```
 
+`game.humanbeangames.com` should be a Cloudflare Tunnel or equivalent reverse
+proxy to the local Rust server. Keep the Rust server loopback-bound unless you
+have added a real public auth/reverse-proxy layer.
+
 Because the player is static, `stream.humanbeangames.com` can show **Not Online**
 even when the Rust game app is closed. The raw backend hostname may show a
 Cloudflare tunnel error when the app is down; that is expected.
+
+### What To Redeploy
+
+Redeploy `dist/humanbeangames_stream` when:
+
+- `src/web.rs` changes;
+- chat, panels, overlays, audio, click handling, status parsing, or browser
+  layout changes;
+- branding or export flags change;
+- the generated `dist/humanbeangames_stream/index.html` changes.
+
+Redeploy `dist/humanbeangames` only when the landing page changes.
+
+Redeploy `dist/ipsc_lab` only when the browser lab changes.
+
+No Cloudflare static redeploy is needed for Rust-only backend/game changes that
+do not change the generated browser player. Those changes require rebuilding and
+restarting the local game process instead.
 
 ## IPSC Video Format
 
@@ -851,11 +1101,11 @@ high-chroma colours.
 Old source TOML files without these offset fields still work in the tools; the
 missing values default to zero. The runtime no longer reads those settings from
 the `.ipsmap`, so always rebake after changing weights, offsets, palette
-colours, or DirectStreamGame palette-matching versions.
+colours, or PixelStream palette-matching versions.
 
 Migration for existing apps:
 
-1. Update the `DirectStreamGame` dependency to a version that supports cooked
+1. Update the `PixelStream` dependency to a version that supports cooked
    self-contained `IPSMAP5` lookup files.
 2. Keep a palette TOML in your downstream app or asset pipeline if useful, but
    ship `palette.ipsmap` as the runtime artifact.
@@ -886,7 +1136,7 @@ palette.ipsmap
 ```
 
 The converter tab uses the current Palette Lab palette automatically, or a
-palette TOML uploaded by the user. DirectStreamGame does not ship a built-in
+palette TOML uploaded by the user. PixelStream does not ship a built-in
 palette file.
 
 Export the static lab:
@@ -917,13 +1167,108 @@ View IPSI still images:
 cargo run --bin ipsc_image_viewer -- output.ipsi
 ```
 
+## Runtime Security Model
+
+PixelStream's custom host is designed for a local game process and a browser
+player, with optional tunneling to a known static player origin. The server binds
+to `127.0.0.1:8080` by default, accepts only known endpoint paths, bounds request
+headers and bodies, and rejects path traversal targets.
+
+Read endpoints such as `/status.json`, `/palette.bin`, `/audio.pcm`,
+`/custom-panels`, `/custom-overlays`, and `/local-chat-feed` are CORS-limited to
+known player origins or local tools. Mutating endpoints (`/local-chat`,
+`/stream-click`, and `/custom-panel-action`) also require the
+`X-PixelStream-Session` token returned by `/status.json`. Viewer device ids are
+used for local identity and audience filtering only; they are not authentication.
+
+All browser-rendered app text is delivered as JSON and inserted with DOM text
+APIs. CSS colors, classes, font weights, and device ids are validated before
+they are accepted.
+
+## Settings API
+
+Generic runtime settings live in the `pixel_stream_settings` crate. Downstream
+games publish `PixelSettingCategory` values containing fields such as numbers,
+booleans, text, and choices. PixelStream owns the generic editor/presentation
+layer; downstream games own the actual settings resources, persistence files,
+and apply systems.
+
+```rust
+use pixel_stream::{
+    PixelSettingCategory, PixelSettingField, PixelSettingNumberRange,
+    PixelSettingsAppExt,
+};
+
+app.add_pixel_settings_category(
+    PixelSettingCategory::new("camera", "Camera").with_field(
+        PixelSettingField::number(
+            "zoom",
+            "Zoom",
+            1.0,
+            PixelSettingNumberRange::new(0.25, 4.0, 0.01),
+        ),
+    ),
+);
+```
+
+Listen for `PixelSettingChanged` when the UI changes a value, then update your
+game resource and save your own settings file.
+
+## Chat API Summary
+
+Use `StreamCommandAppExt::add_stream_command` to route local chat commands into
+Bevy systems. Command systems receive `StreamChatCommand`, including the command
+name, args, stable viewer identity, display name, roles, and optional message id.
+
+Use `StreamChatSender` for app-to-chat messages:
+
+- `send` posts a short-lived global system reply.
+- `send_local(LocalChatEntryOptions)` supports global messages, viewer-only
+  messages, TTLs, mentions, display-name color, message color, and safe CSS
+  classes.
+- `LocalChatEntryOptions::for_viewer_identity` and `for_viewer_name` scope
+  replies to one browser/device or viewer name.
+
+## Overlay And Sprite API Summary
+
+Browser overlays are published through `CustomHostOverlayHub`. They draw above
+the stream canvas and can be global or viewer-scoped. Supported overlay elements
+include circles, flags, text, and simple sprites/images, positioned either in
+stream pixels or normalized stream coordinates. Use these for UI annotations
+such as selected-town rings, flags, and click hints.
+
+`DirectWorldSprite` is different: it is attached to a world entity, projected
+through the stream camera, depth-tested against the scene, rendered before
+palette conversion, and composited before `DirectText`. Sprite size is specified
+in stream pixels, and world sprites are unlit; they do not receive scene shadows.
+
+## Stream Settings Summary
+
+The important runtime stream knobs are:
+
+- resolution: currently square, 64-256, divisible by 8;
+- FPS: custom-host validation currently accepts 1-60;
+- batch size: controls HTTP/video buffering and audio sync latency;
+- `PixelStreamAudioSyncConfig`: fixed, estimated-video-latency, or
+  measured-video-latency delay;
+- `PixelStreamDitherSettings`: value/chroma/hue Bayer dithering before scene
+  quantization;
+- `CustomHostBranding` and `CustomHostLayout`: browser title, header, player
+  width, and minimization behavior;
+- `PixelStreamStartRequest` and `PixelStreamStopRequest`: programmatic
+  custom-host control.
+
+Custom-host runtime palette conversion is IPSMAP-only. Palette TOML is still an
+authoring/tooling format, but the running app should ship and pass
+`palette.ipsmap`.
+
 ## Project Structure
 
 Key library modules:
 
 ```text
 src/app.rs             app shell and plugin setup
-src/plugin.rs          DirectStreamPlugin
+src/plugin.rs          PixelStreamPlugin
 src/capture.rs         GPU readback
 src/frames.rs          frame hubs and direct frame processors
 src/palette.rs         IPSC encoder
@@ -936,6 +1281,8 @@ src/stream_control.rs  stats-window controls
 src/scene.rs           stream target and stats UI
 src/direct_text.rs     CPU post-readback text overlay support
 src/demo.rs            demo-only game scene/audio/video
+crates/pixel_stream_settings
+                      generic setting descriptors and changed messages
 ```
 
 Tools:
@@ -953,7 +1300,9 @@ src/bin/ipsc_png_to_ipsi.rs
 
 ## Current Caveats
 
-- The custom host is a prototype server using a small hand-written HTTP layer.
+- The custom host uses a small hand-written HTTP layer. It is intentionally
+  loopback-first and should not be exposed to the public internet without an
+  explicit reverse-proxy/auth layer.
 - Local chat moderation is in-memory and session-scoped.
 - Static player deployment currently assumes `game.humanbeangames.com` as the
   backend origin unless you pass another origin to `ipsc_export_static_stream`.
@@ -967,7 +1316,7 @@ src/bin/ipsc_png_to_ipsi.rs
 Useful local checks:
 
 ```powershell
-cargo check --bin DirectStreamGame
+cargo check --bin PixelStream
 cargo check --bin ipsc_lab --bin ipsc_export_static_stream
 cargo test --lib
 ```

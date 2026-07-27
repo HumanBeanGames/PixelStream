@@ -1,3 +1,5 @@
+// Displays the unquantized raw preview image.
+
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0)

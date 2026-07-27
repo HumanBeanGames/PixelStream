@@ -1,3 +1,8 @@
+//! DirectText overlay rendering.
+//!
+//! Text is converted into stream-pixel glyph quads and routed through the direct
+//! IPSMAP lookup path so UI colors are stable after scene palette biasing.
+
 use crate::{
     gpu_palette::{GpuPalettePipeline, INDEXED_DIRECT_OVERLAY_MARKER, indexed_unorm_byte},
     palette_lut::LUT_ENTRY_COUNT,

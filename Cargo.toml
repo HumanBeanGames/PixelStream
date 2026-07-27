@@ -1,11 +1,15 @@
 [package]
-name = "DirectStreamGame"
+name = "PixelStream"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "direct_stream_game"
+name = "pixel_stream"
 path = "src/lib.rs"
+
+[workspace]
+members = [".", "crates/pixel_stream_settings"]
+resolver = "3"
 
 [features]
 default = []
@@ -13,16 +17,18 @@ cpu-palette-encoder = []
 
 [dependencies]
 arboard = "3.4.0"
-bevy = "0.18.1"
-bevy_ui_widgets = "0.18.1"
+bevy = "0.19"
+bevy_ui_widgets = "0.19"
 crossbeam-channel = "0.5.15"
+pixel_stream_settings = { path = "crates/pixel_stream_settings" }
 
 # Dynamically link LGPL-compatible FFmpeg shared libraries. Do not enable
 # ffmpeg-next's "static", "build", "build-license-gpl", or
 # "build-license-nonfree" features for proprietary distribution.
 ffmpeg-next = { version = "=8.1.0", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+getrandom = "0.3"
 image = { version = "0.25.9", default-features = false, features = ["png"] }
 open = "5.3"
 pollster = "0.4"
 rfd = "0.15"
-wgpu = "27.0.1"
+wgpu = "29"

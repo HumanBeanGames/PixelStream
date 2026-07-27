@@ -1,3 +1,8 @@
+//! CPU readback capture path for Bevy render targets.
+//!
+//! Captured frames are passed through optional downstream processors before
+//! preview/custom-host encoders consume them.
+
 use crate::{
     frames::{
         DirectStreamFrame, DirectStreamFrameProcessors, RawFrame, RawFramePixels, RawFrameSenders,

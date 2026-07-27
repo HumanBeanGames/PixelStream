@@ -1,3 +1,5 @@
+//! Local browser lab for converting PNG assets into indexed IPSI sprites.
+
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -121,7 +123,7 @@ fn converter_html() -> String {
       <a class="button secondary" id="downloadIpsi" aria-disabled="true">Download IPSI</a>
       <button class="secondary" id="resetPalette">Clear Palette</button>
     </div>
-    <p class="hint">The converter center-crops to the chosen aspect ratio, nearest-samples the source image like the DirectStreamGame preview shader, then writes one IPSMAP lookup index per pixel.</p>
+    <p class="hint">The converter center-crops to the chosen aspect ratio, nearest-samples the source image like the PixelStream preview shader, then writes one IPSMAP lookup index per pixel.</p>
   </aside>
   <main>
     <header>
@@ -222,7 +224,7 @@ fn converter_html() -> String {
       const ipsi = makeIpsi(width, height, palette, pixels);
       setDownload(ipsi, outputName(selectedPng.name));
       const used = new Set(pixels).size;
-      status.textContent = `${source.width}x${source.height} -> ${width}x${height}\npalette ${paletteSource}\n${palette.length} palette colours, ${used} used\n${paletteFingerprint(palette)}\nsampling DirectStreamGame nearest lookup`;
+      status.textContent = `${source.width}x${source.height} -> ${width}x${height}\npalette ${paletteSource}\n${palette.length} palette colours, ${used} used\n${paletteFingerprint(palette)}\nsampling PixelStream nearest lookup`;
     }
 
     function parseDimension(value, name) {

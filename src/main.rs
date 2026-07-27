@@ -1,3 +1,5 @@
+//! PixelStream demo binary entry point.
+
 fn main() {
-    direct_stream_game::run_demo();
+    pixel_stream::run_demo();
 }

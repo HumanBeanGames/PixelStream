@@ -1,4 +1,9 @@
-pub(crate) const WINDOW_TITLE: &str = "Direct Stream Game";
+//! Library-wide defaults and endpoint names.
+//!
+//! Public aliases keep older DirectStream naming usable while new code can use
+//! PixelStream constants.
+
+pub(crate) const WINDOW_TITLE: &str = "PixelStream";
 pub(crate) const WEB_ADDR: &str = "127.0.0.1:8080";
 pub(crate) const STREAM_PATH: &str = "/stream.mjpg";
 pub(crate) const PALETTE_STREAM_PATH: &str = "/palette.bin";
@@ -34,6 +39,11 @@ pub const DIRECT_STREAM_HEIGHT: u32 = STREAM_HEIGHT;
 pub const DIRECT_STREAM_FPS: u32 = STREAM_FPS;
 pub const DIRECT_STREAM_AUDIO_SAMPLE_RATE: u32 = STREAM_AUDIO_SAMPLE_RATE;
 pub const DIRECT_STREAM_AUDIO_CHANNELS: usize = STREAM_AUDIO_CHANNELS;
+pub const PIXEL_STREAM_WIDTH: u32 = DIRECT_STREAM_WIDTH;
+pub const PIXEL_STREAM_HEIGHT: u32 = DIRECT_STREAM_HEIGHT;
+pub const PIXEL_STREAM_FPS: u32 = DIRECT_STREAM_FPS;
+pub const PIXEL_STREAM_AUDIO_SAMPLE_RATE: u32 = DIRECT_STREAM_AUDIO_SAMPLE_RATE;
+pub const PIXEL_STREAM_AUDIO_CHANNELS: usize = DIRECT_STREAM_AUDIO_CHANNELS;
 
 pub(crate) fn preview_display_scale(width: u32, height: u32) -> f32 {
     PREVIEW_DISPLAY_PIXELS / width.max(height).max(1) as f32

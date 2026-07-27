@@ -1,3 +1,5 @@
+//! Builds a preview PNG from an IPSMAP palette.
+
 use std::{
     env, fs,
     io::Write,
@@ -76,10 +78,10 @@ fn palette_swatch_pixels() -> Vec<u8> {
                 let x = hue * CHROMA_LEVELS + visual_chroma_column;
                 let y = GRAYSCALE_COUNT - 1 - lightness;
                 let pixel = &mut pixels[y * WIDTH as usize + x];
-                if let Some(index) = compact_palette_index(hue, hue_base, chroma, lightness) {
-                    if *pixel == 0 {
-                        *pixel = index as u8;
-                    }
+                if let Some(index) = compact_palette_index(hue, hue_base, chroma, lightness)
+                    && *pixel == 0
+                {
+                    *pixel = index as u8;
                 }
             }
         }

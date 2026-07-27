@@ -1,19 +1,23 @@
+//! Stream-resolution backdrop sprites.
+//!
+//! Backdrops are drawn in stream pixel space before DirectText. They are useful
+//! for star fields, sky layers, and other low-resolution assets that should not
+//! be projected from world-space geometry.
+
 use crate::public_types::{DirectColorLookup, DirectStreamTarget};
 use bevy::{
     asset::{RenderAssetUsages, load_internal_asset, uuid_handle},
     camera::visibility::RenderLayers,
     light::NotShadowCaster,
+    material::AlphaMode,
     math::Affine2,
     mesh::{Indices, MeshVertexBufferLayoutRef},
     pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin},
     prelude::*,
     reflect::TypePath,
-    render::{
-        alpha::AlphaMode,
-        render_resource::{
-            AsBindGroup, ColorWrites, Face, PrimitiveTopology, RenderPipelineDescriptor,
-            SpecializedMeshPipelineError,
-        },
+    render::render_resource::{
+        AsBindGroup, ColorWrites, Face, PrimitiveTopology, RenderPipelineDescriptor,
+        SpecializedMeshPipelineError,
     },
     shader::{Shader, ShaderRef},
     transform::TransformSystems,
@@ -386,7 +390,7 @@ fn sync_direct_backdrop_sprites(
                 material.0 = render.material.clone();
             }
 
-            if let Some(existing_material) = materials.get_mut(&render.material) {
+            if let Some(mut existing_material) = materials.get_mut(&render.material) {
                 existing_material.base_color = sprite.tint;
                 existing_material.base_color_texture = Some(sprite.image.clone());
                 existing_material.depth_bias = backdrop_depth_bias(sprite.layer);
@@ -394,7 +398,7 @@ fn sync_direct_backdrop_sprites(
                 existing_material.uv_transform =
                     Affine2::from_scale_angle_translation(sprite.uv_scale, 0.0, sprite.uv_offset);
             }
-            if let Some(existing_marker_material) =
+            if let Some(mut existing_marker_material) =
                 marker_materials.get_mut(&render.marker_material)
             {
                 *existing_marker_material = backdrop_marker_material(sprite);

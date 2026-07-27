@@ -1,3 +1,5 @@
+// Generates the default OKLCH-spaced palette used by PixelStream authoring tools.
+
 import fs from "node:fs/promises";
 
 const HUE_COUNT = 20;
@@ -123,7 +125,7 @@ ${colors.map((color) => `  ${color},`).join("\n")}
 
 const colors = generatedColors();
 const output = process.argv[2] ?? "generated_palette.toml";
-await fs.writeFile(output, paletteToml("# Generated DirectStreamGame-compatible palette.", colors));
+await fs.writeFile(output, paletteToml("# Generated PixelStream-compatible palette.", colors));
 
 const realColorCount = colors.findLastIndex((color) => color !== '"#000000"') + 1;
 console.error(`Generated ${output}: ${colors.length} colors (${realColorCount} real, ${256 - realColorCount} reserved).`);

@@ -1,3 +1,5 @@
+//! Shared runtime statistics for preview, custom-host, readback, and transport.
+
 use bevy::prelude::*;
 use std::{
     collections::VecDeque,
@@ -8,6 +10,7 @@ use std::{
 #[derive(Component)]
 pub(crate) struct StatsText;
 
+/// Mutable counters and rolling timings sampled by the stats and status UIs.
 #[derive(Default)]
 pub(crate) struct StreamStats {
     pub(crate) frames_captured: u64,
@@ -63,6 +66,7 @@ pub(crate) struct StreamStats {
     pub(crate) latest_frame_bytes: usize,
 }
 
+/// Thread-safe stats handle shared between Bevy systems and HTTP/audio workers.
 #[derive(Clone, Resource)]
 pub(crate) struct SharedStats(pub(crate) Arc<Mutex<StreamStats>>);
 

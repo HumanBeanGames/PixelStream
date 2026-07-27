@@ -1,0 +1,10 @@
+[package]
+name = "pixel_stream_settings"
+version = "0.1.0"
+edition = "2024"
+description = "Generic runtime setting descriptors and Bevy integration for PixelStream hosts."
+
+[dependencies]
+bevy = "0.19"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

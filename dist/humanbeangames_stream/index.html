@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MERCANTILE</title>
   <meta name="direct-stream-version" content="0.1.0">
-  <meta name="direct-stream-exported-at-ms" content="1781440118566">
+  <meta name="direct-stream-exported-at-ms" content="1785171894609">
   <style>
     :root { color-scheme: dark; font-family: Arial, sans-serif; background: #111318; color: #eef3f8; --direct-stream-max-player-width: 640px; }
     * { box-sizing: border-box; }
@@ -27,6 +27,8 @@
     .player { grid-area: player; position: relative; width: min(100%, var(--direct-stream-max-player-width)); aspect-ratio: var(--direct-stream-aspect-ratio); min-width: 240px; }
     canvas { display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; image-rendering: crisp-edges; background: #050608; border: 1px solid #303847; }
     .stream-overlay { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; pointer-events: none; z-index: 3; background: transparent; }
+    .stream-loading { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; background: #050608; color: #dbe7f3; font: 700 clamp(16px, 3vw, 28px) Arial, sans-serif; letter-spacing: 0; text-align: center; pointer-events: none; }
+    .stream-loading[hidden] { display: none; }
     .unmute { appearance: none; position: absolute; inset: -1px; z-index: 4; display: grid; place-items: center; box-sizing: border-box; margin: 0; padding: 0; border: 0; border-radius: 0; background: rgba(5, 6, 8, 0.54); color: #f8fafc; font: 700 clamp(18px, 4vw, 34px) Arial, sans-serif; cursor: pointer; text-shadow: 0 2px 8px #000; }
     .unmute[hidden] { display: none; }
     .player-controls { position: absolute; z-index: 7; left: 10px; right: 10px; bottom: 10px; display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 5px; background: rgba(5, 6, 8, 0.62); opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
@@ -38,7 +40,7 @@
     .chat[hidden] { display: none; }
     .chat h2 { margin: 0; padding: 10px 12px; border-bottom: 1px solid #303847; font-size: 14px; }
     .chat-log { flex: 1 1 auto; min-height: 0; padding: 10px 12px; overflow-y: auto; color: #cbd5e1; font: 13px Consolas, monospace; }
-    .chat-log p { margin: 0 0 8px; }
+    .chat-log p { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
     .chat-input { flex: none; display: flex; gap: 6px; padding: 10px; border-top: 1px solid #303847; }
     .chat-input input { flex: 1; min-width: 0; background: #111722; color: #eef3f8; border: 1px solid #3a4353; border-radius: 4px; padding: 7px 8px; }
     .chat-input button { border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 7px 10px; }
@@ -107,8 +109,9 @@
       <section class="panel-region above-region" id="abovePanels"></section>
       <section class="panel-region left-region" id="leftPanels"></section>
       <div class="player">
-        <canvas id="screen" width="320" height="240"></canvas>
-        <canvas class="stream-overlay" id="streamOverlay" width="320" height="240"></canvas>
+        <canvas id="screen" width="256" height="256"></canvas>
+        <canvas class="stream-overlay" id="streamOverlay" width="256" height="256"></canvas>
+        <div class="stream-loading" id="streamLoading">Loading stream...</div>
         <section class="overlay-panels overlay-top-left" id="overlayTopLeftPanels"></section>
         <section class="overlay-panels overlay-top-right" id="overlayTopRightPanels"></section>
         <section class="overlay-panels overlay-bottom-left" id="overlayBottomLeftPanels"></section>
@@ -129,6 +132,7 @@
     const stage = document.getElementById("stage");
     const canvas = document.getElementById("screen");
     const overlayCanvas = document.getElementById("streamOverlay");
+    const streamLoading = document.getElementById("streamLoading");
     const player = document.querySelector(".player");
     const togglePlayerButton = document.getElementById("togglePlayerButton");
     const pageHeaderTitle = document.getElementById("pageHeaderTitle");
@@ -187,11 +191,14 @@
     let audioShouldReconnect = false;
     let audioLoopRunning = false;
     let streamOnline = false;
+    let serverStreamReady = false;
+    let statusPollDelayMs = 500;
     let requestedUiVisible = false;
     let lastChatId = 0;
     let chatGeneration = null;
     let shownChatIds = new Set();
     let currentViewer = null;
+    let serverSessionToken = "";
     let currentOverlays = [];
     const overlayImageCache = new Map();
     let lastAudioLeft = 0;
@@ -201,14 +208,15 @@
     const audioPlaybackSampleRate = 48000;
     const audioUpsampleFactor = audioPlaybackSampleRate / audioTransportSampleRate;
     const deviceIdHeaderName = "X-DirectStream-Device-Id";
-    const deviceIdStorageKey = "directstream_device_id";
+    const deviceIdStorageKey = "pixelstream_device_id";
+    const legacyDeviceIdStorageKey = "directstream_device_id";
     const playerMinimizable = true;
     const startPlayerMinimized = false;
     const staticBranding = {
       page_title: "MERCANTILE",
       header_title: "MERCANTILE",
       version: "0.1.0",
-      exported_at_ms: 1781440118566,
+      exported_at_ms: 1785171894609,
     };
     const playerMinimizedStorageKey = "directstream_player_minimized";
     let volatileDeviceId = null;
@@ -283,7 +291,12 @@
       try {
         let id = localStorage.getItem(deviceIdStorageKey);
         if (!isValidDeviceId(id)) {
+          id = localStorage.getItem(legacyDeviceIdStorageKey);
+        }
+        if (!isValidDeviceId(id)) {
           id = makeDeviceId();
+        }
+        if (localStorage.getItem(deviceIdStorageKey) !== id) {
           localStorage.setItem(deviceIdStorageKey, id);
         }
         return id;
@@ -324,10 +337,20 @@
       return { ...options, headers };
     }
 
-    window.DirectStreamResetLocalIdentity = () => {
+    function sessionFetchOptions(options = {}) {
+      const next = identityFetchOptions(options);
+      if (serverSessionToken) {
+        next.headers.set("X-PixelStream-Session", serverSessionToken);
+      }
+      return next;
+    }
+
+    window.PixelStreamResetLocalIdentity = () => {
       localStorage.removeItem(deviceIdStorageKey);
-      console.info("Direct Stream local identity reset. Reload the page to use a new identity.");
+      localStorage.removeItem(legacyDeviceIdStorageKey);
+      console.info("PixelStream local identity reset. Reload the page to use a new identity.");
     };
+    window.DirectStreamResetLocalIdentity = window.PixelStreamResetLocalIdentity;
 
     function resetStreamState() {
       width = 0;
@@ -341,6 +364,7 @@
       pending = new Uint8Array(0);
       frameQueue = [];
       streamReady = false;
+      streamLoading.hidden = false;
       playbackRunning = false;
       playbackStarted = false;
       nextPlaybackAt = 0;
@@ -415,6 +439,7 @@
       image = ctx.createImageData(width, height);
       tileCache.length = 0;
       streamReady = true;
+      streamLoading.hidden = true;
       pending = pending.slice(headerLength);
       drawCustomOverlays();
       return true;
@@ -663,6 +688,13 @@
           while (!streamOnline) {
             await new Promise(resolve => setTimeout(resolve, 250));
           }
+          while (streamOnline && !serverStreamReady) {
+            streamLoading.hidden = false;
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+          if (!streamOnline) {
+            continue;
+          }
           resetStreamState();
           const response = await fetch("https://game.humanbeangames.com/palette.bin?t=" + Date.now(), { cache: "no-store" });
           if (!response.ok) {
@@ -903,7 +935,11 @@
         try {
           const response = await fetch("https://game.humanbeangames.com/status.json?t=" + Date.now(), { cache: "no-store" });
           const status = await response.json();
+          statusPollDelayMs = 500;
           streamOnline = !!status.online;
+          serverStreamReady = !!status.stream_ready;
+          serverSessionToken = typeof status.session_token === "string" ? status.session_token : "";
+          streamLoading.hidden = !streamOnline || (serverStreamReady && streamReady);
           setRequestedUiVisible(streamOnline && !!(status.chat_panel && status.chat_panel.requested), status.chat_panel);
           applyRuntimeBranding(status);
           if (streamOnline) {
@@ -912,10 +948,14 @@
           updateUnmuteOverlay();
         } catch (error) {
           streamOnline = false;
+          serverStreamReady = false;
+          serverSessionToken = "";
+          streamLoading.hidden = true;
           setRequestedUiVisible(false, null);
           updateUnmuteOverlay();
+          statusPollDelayMs = Math.min(10000, Math.max(1000, Math.round(statusPollDelayMs * 1.7)));
         }
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, statusPollDelayMs));
       }
     }
 
@@ -1037,11 +1077,10 @@
         height
       );
       if (!streamPoint) return;
-      fetch("https://game.humanbeangames.com/stream-click", {
+      fetch("https://game.humanbeangames.com/stream-click", sessionFetchOptions({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          [deviceIdHeaderName]: getDeviceId(),
         },
         body: JSON.stringify({
           client_x: event.clientX,
@@ -1052,7 +1091,7 @@
           normalized_y: streamPoint.normalizedY,
         }),
         cache: "no-store",
-      }).catch(error => console.error(error));
+      })).catch(error => console.error(error));
     });
 
     function getRenderedStreamRect(canvasElement, streamWidth, streamHeight) {
@@ -1122,15 +1161,14 @@
       const message = chatInput.value.trim();
       if (!message) return;
       chatInput.value = "";
-      fetch("https://game.humanbeangames.com/local-chat", {
+      fetch("https://game.humanbeangames.com/local-chat", sessionFetchOptions({
         method: "POST",
         headers: {
           "Content-Type": "text/plain;charset=utf-8",
-          [deviceIdHeaderName]: getDeviceId(),
         },
         body: message,
         cache: "no-store",
-      })
+      }))
         .then(response => response.ok ? response.json() : Promise.reject(new Error(`chat failed: ${response.status}`)))
         .then(() => fetchChatFeed())
         .catch(error => {
@@ -1614,18 +1652,17 @@
 
     function submitPanelAction(panelId, actionId) {
       if (!panelId || !actionId) return;
-      fetch("https://game.humanbeangames.com/custom-panel-action", {
+      fetch("https://game.humanbeangames.com/custom-panel-action", sessionFetchOptions({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          [deviceIdHeaderName]: getDeviceId(),
         },
         body: JSON.stringify({
           panel_id: panelId,
           action_id: actionId,
         }),
         cache: "no-store",
-      }).catch(error => console.error(error));
+      })).catch(error => console.error(error));
     }
 
     function drawCustomOverlays() {

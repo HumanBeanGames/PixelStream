@@ -1,3 +1,9 @@
+//! Bevy render graph integration for palette conversion.
+//!
+//! This module routes the scene render target through the IPSMAP lookup shader,
+//! handles preview/custom-host target swapping, and applies ordered dithering to
+//! captured scene pixels before quantization.
+
 use crate::{
     config::{AppConfig, WindowMode},
     constants::INITIAL_RENDER_SETTLE_FRAMES,
@@ -723,13 +729,13 @@ pub(crate) fn retarget_custom_host_pipeline(
         *camera_target = RenderTarget::Image(first_overlay_mask.into());
     }
 
-    if let Some(material) = raw_copy_materials.get_mut(&pipeline.source_copy_material) {
+    if let Some(mut material) = raw_copy_materials.get_mut(&pipeline.source_copy_material) {
         material.source_image = source_image;
     } else {
         return Err(());
     }
 
-    if let Some(material) = materials.get_mut(&pipeline.material) {
+    if let Some(mut material) = materials.get_mut(&pipeline.material) {
         material.source_image = capture_image.clone();
         let lookup_texture = images.add(make_lookup_texture(palette_lookup));
         material.lookup_texture = lookup_texture.clone();
@@ -740,7 +746,7 @@ pub(crate) fn retarget_custom_host_pipeline(
         return Err(());
     }
 
-    if let Some(material) = raw_snapshot_materials.get_mut(&pipeline.raw_snapshot_material) {
+    if let Some(mut material) = raw_snapshot_materials.get_mut(&pipeline.raw_snapshot_material) {
         material.source_image = capture_image.clone();
     } else {
         return Err(());
@@ -797,8 +803,11 @@ fn sync_palette_material_bias(
     let (Some(palette_bias), Some(pipeline)) = (palette_bias, pipeline) else {
         return;
     };
+    if !palette_bias.is_changed() {
+        return;
+    }
 
-    if let Some(material) = materials.get_mut(&pipeline.material) {
+    if let Some(mut material) = materials.get_mut(&pipeline.material) {
         let bias = palette_bias.get();
         material.params = palette_material_params(&bias, pipeline.palette_count);
         material.input_offset_a = palette_input_offset_a(&bias);
@@ -827,14 +836,14 @@ fn sync_palette_material_dither(
         dither.chroma_strength,
     );
     let dither_b = Vec4::new(dither.hue_strength, 0.0, 0.0, 0.0);
-    if let Some(material) = materials.get_mut(&pipeline.material) {
-        if material.dither_a != dither_a || material.dither_b != dither_b {
-            material.dither_a = dither_a;
-            material.dither_b = dither_b;
-        }
+    if let Some(mut material) = materials.get_mut(&pipeline.material)
+        && (material.dither_a != dither_a || material.dither_b != dither_b)
+    {
+        material.dither_a = dither_a;
+        material.dither_b = dither_b;
     }
     if let Some(throttle) = throttle
-        && let Some(material) = display_materials.get_mut(&throttle.display_material)
+        && let Some(mut material) = display_materials.get_mut(&throttle.display_material)
         && (material.dither_a != dither_a || material.dither_b != dither_b)
     {
         material.dither_a = dither_a;
@@ -928,10 +937,11 @@ fn throttle_preview_palette_cameras(
             }
         };
         if let Some(display_index) = display_index
-            && let Some(display_material) = display_materials.get_mut(&throttle.display_material)
+            && let Some(mut display_material) =
+                display_materials.get_mut(&throttle.display_material)
         {
             display_material.source_image = pipeline.output_images[display_index].clone();
-            if let Some(raw_display_material) =
+            if let Some(mut raw_display_material) =
                 raw_display_materials.get_mut(&throttle.raw_display_material)
             {
                 raw_display_material.source_image = pipeline.source_images[display_index].clone();

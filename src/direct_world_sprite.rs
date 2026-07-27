@@ -1,3 +1,8 @@
+//! World-anchored stream sprites.
+//!
+//! A real Bevy entity provides transform/depth context while this system draws a
+//! small unlit stream-pixel sprite for readability at low output resolutions.
+
 use crate::{
     gpu_palette::{GpuPalettePipeline, INDEXED_DIRECT_OVERLAY_MARKER, indexed_unorm_byte},
     palette_lut::LUT_ENTRY_COUNT,

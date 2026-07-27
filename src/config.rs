@@ -1,12 +1,16 @@
+//! Command-line configuration parsing for PixelStream modes and dimensions.
+
 use crate::constants::{STREAM_FPS, STREAM_HEIGHT, STREAM_WIDTH};
 use std::{env, path::PathBuf};
 
+/// Selects whether PixelStream launches the preview editor or stats/control UI.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WindowMode {
     Preview,
     Stats,
 }
 
+/// Parsed startup configuration shared by PixelStream setup systems.
 #[derive(bevy::prelude::Resource)]
 pub(crate) struct AppConfig {
     pub(crate) window_mode: WindowMode,

@@ -1,3 +1,5 @@
+// Draws backdrop sprites while marking output pixels for the direct lookup path.
+
 #import bevy_pbr::forward_io::VertexOutput
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0)

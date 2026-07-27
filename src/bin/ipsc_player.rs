@@ -1,3 +1,5 @@
+//! Standalone local player for IPSC palette stream debugging.
+
 use std::{
     env, fs,
     io::{Read, Write},
@@ -19,7 +21,7 @@ fn main() {
         .filter(|fps| (1..=60).contains(fps))
         .unwrap_or(5);
 
-    let recording = match fs::read(&path).and_then(|bytes| validate_recording(bytes)) {
+    let recording = match fs::read(&path).and_then(validate_recording) {
         Ok(bytes) => bytes,
         Err(err) => {
             eprintln!("Could not load {}: {err}", path.display());

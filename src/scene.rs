@@ -1,3 +1,9 @@
+//! Built-in PixelStream preview, stats, and setup UI scene.
+//!
+//! The code here is intentionally generic: downstream games expose settings,
+//! but PixelStream owns the preview windows, palette debug views, status text,
+//! and generic setup controls.
+
 use crate::{
     config::{AppConfig, WindowMode, effective_custom_batch_size},
     constants::{
@@ -33,7 +39,7 @@ use bevy::{
         render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
     },
     ui::{Checked, RelativeCursorPosition},
-    window::{MonitorSelection, PrimaryWindow, WindowMode as BevyWindowMode},
+    window::PrimaryWindow,
 };
 use bevy_ui_widgets::{Checkbox, Slider, SliderRange, SliderThumb, SliderValue, TrackClick};
 use crossbeam_channel::Receiver;
@@ -52,6 +58,19 @@ use std::{
 
 const PREVIEW_PALETTE_VALIDATION_FRAMES: u32 = 30;
 const PREVIEW_PALETTE_MISMATCH_LOG: &str = "preview_palette_audit.txt";
+
+#[derive(Resource)]
+pub(crate) struct StatsWindowUpdateClock {
+    timer: Timer,
+}
+
+impl Default for StatsWindowUpdateClock {
+    fn default() -> Self {
+        Self {
+            timer: Timer::new(Duration::from_millis(200), TimerMode::Repeating),
+        }
+    }
+}
 
 pub(crate) struct PendingReadback {
     pub(crate) captured_at: Instant,
@@ -121,27 +140,6 @@ pub(crate) struct PreviewRebakingOverlayText;
 
 #[derive(Component)]
 pub(crate) struct PreviewQuantizedDisplay;
-
-pub(crate) fn enter_preview_fullscreen(
-    config: Res<AppConfig>,
-    mut frames_waited: Local<u8>,
-    mut windows: Query<&mut Window, With<PrimaryWindow>>,
-) {
-    if config.window_mode != WindowMode::Preview || *frames_waited == u8::MAX {
-        return;
-    }
-
-    *frames_waited += 1;
-    if *frames_waited < 2 {
-        return;
-    }
-
-    let Ok(mut window) = windows.single_mut() else {
-        return;
-    };
-    window.mode = BevyWindowMode::BorderlessFullscreen(MonitorSelection::Current);
-    *frames_waited = u8::MAX;
-}
 
 #[derive(Component)]
 pub(crate) struct PreviewPaletteEditorRoot;
@@ -584,11 +582,8 @@ pub(crate) fn setup_direct_stream_scene(
         let palette_config = palette_lookup.config();
         let palette_colors = palette_config.colors.clone();
         let palette_bias = crate::palette::PaletteBias::from(palette_config.matching);
-        let batch_size = if config.custom_host {
-            effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps)
-        } else {
-            effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps)
-        };
+        let batch_size =
+            effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps);
         let overlay_enabled = std::env::var_os("DIRECT_STREAM_AUDIT_DISABLE_OVERLAYS").is_none();
         let pipeline = spawn_custom_host_pipeline(
             &mut commands,
@@ -789,7 +784,7 @@ fn spawn_preview_comparison(
 
 fn reset_preview_palette_mismatch_log(width: u32, height: u32) {
     let header = format!(
-        "DirectStreamGame preview palette audit\nsize={width}x{height}\nframes={}\n\n",
+        "PixelStream preview palette audit\nsize={width}x{height}\nframes={}\n\n",
         PREVIEW_PALETTE_VALIDATION_FRAMES
     );
     if let Err(error) = fs::write(PREVIEW_PALETTE_MISMATCH_LOG, header) {
@@ -910,7 +905,7 @@ fn spawn_preview_loading_ui(commands: &mut Commands) {
         children![(
             Text::new("Loading preview..."),
             TextFont {
-                font_size: 24.0,
+                font_size: FontSize::Px(24.0),
                 ..default()
             },
             TextColor(Color::srgb(0.86, 0.92, 0.98)),
@@ -940,7 +935,7 @@ fn spawn_preview_rebaking_overlay(
         children![(
             Text::new("Rebaking..."),
             TextFont {
-                font_size: 24.0,
+                font_size: FontSize::Px(24.0),
                 ..default()
             },
             TextColor(Color::srgb(0.92, 0.96, 1.0)),
@@ -966,7 +961,7 @@ fn spawn_preview_pixel_debug_ui(commands: &mut Commands) {
                 "Pixel debug: click either preview to compare the paired raw and quantized pixels"
             ),
             TextFont {
-                font_size: 11.0,
+                font_size: FontSize::Px(11.0),
                 ..default()
             },
             TextColor(Color::srgb(0.86, 0.92, 0.98)),
@@ -1182,7 +1177,7 @@ fn spawn_preview_palette_editor_ui(
                                         column.spawn((
                                             Text::new(group.0),
                                             TextFont {
-                                                font_size: 10.0,
+                                                font_size: FontSize::Px(10.0),
                                                 ..default()
                                             },
                                             TextColor(Color::srgb(0.92, 0.96, 1.0)),
@@ -1247,7 +1242,7 @@ fn spawn_preview_palette_editor_ui(
                     panel.spawn((
                         Text::new("Palette editor ready"),
                         TextFont {
-                            font_size: 11.0,
+                            font_size: FontSize::Px(11.0),
                             ..default()
                         },
                         TextColor(Color::srgb(0.78, 0.86, 0.94)),
@@ -1274,7 +1269,7 @@ fn preview_palette_button(label: &'static str) -> impl Bundle {
         children![(
             Text::new(label),
             TextFont {
-                font_size: 10.0,
+                font_size: FontSize::Px(10.0),
                 ..default()
             },
             TextColor(Color::srgb(0.90, 0.95, 1.0)),
@@ -1360,7 +1355,7 @@ fn preview_palette_checkbox(
             (
                 Text::new(label),
                 TextFont {
-                    font_size: 10.0,
+                    font_size: FontSize::Px(10.0),
                     ..default()
                 },
                 TextColor(Color::srgb(0.90, 0.95, 1.0)),
@@ -1377,7 +1372,7 @@ fn spawn_oklch_picker_panel(
     parent.spawn((
         Text::new("OKLCH Picker"),
         TextFont {
-            font_size: 10.0,
+            font_size: FontSize::Px(10.0),
             ..default()
         },
         TextColor(Color::srgb(0.92, 0.96, 1.0)),
@@ -1502,7 +1497,7 @@ fn spawn_oklch_picker_strip(
             row.spawn((
                 Text::new(label),
                 TextFont {
-                    font_size: 9.0,
+                    font_size: FontSize::Px(9.0),
                     ..default()
                 },
                 TextColor(Color::srgb(0.86, 0.91, 0.98)),
@@ -1556,7 +1551,7 @@ fn preview_palette_slider(
             (
                 Text::new(label),
                 TextFont {
-                    font_size: 9.0,
+                    font_size: FontSize::Px(9.0),
                     ..default()
                 },
                 TextColor(Color::srgb(0.78, 0.86, 0.94)),
@@ -1571,6 +1566,7 @@ fn preview_palette_slider(
                 Hovered::default(),
                 Slider {
                     track_click: TrackClick::Snap,
+                    ..default()
                 },
                 SliderValue(value),
                 SliderRange::new(min, max),
@@ -1613,7 +1609,7 @@ fn preview_palette_slider(
             (
                 Text::new(format!("{value:.3}")),
                 TextFont {
-                    font_size: 9.0,
+                    font_size: FontSize::Px(9.0),
                     ..default()
                 },
                 TextColor(Color::srgb(0.90, 0.95, 1.0)),
@@ -2230,7 +2226,7 @@ fn commit_preview_palette_to_pipeline(
     };
     pipeline.palette_colors.clone_from(&editor.colors);
     pipeline.palette_count = editor.colors.len();
-    if let Some(image) = images.get_mut(&pipeline.palette_texture)
+    if let Some(mut image) = images.get_mut(&pipeline.palette_texture)
         && let Some(data) = image.data.as_mut()
     {
         data.clear();
@@ -2266,10 +2262,10 @@ fn commit_loaded_preview_lookup_to_pipeline(
         pipeline.palette_colors.clone_from(&colors);
         pipeline.palette_count = colors.len();
         pipeline.lookup_entries = lookup_entries.clone();
-        if let Some(image) = images.get_mut(&pipeline.palette_texture) {
+        if let Some(mut image) = images.get_mut(&pipeline.palette_texture) {
             *image = crate::gpu_palette::make_palette_texture(&colors);
         }
-        if let Some(image) = images.get_mut(&pipeline.lookup_texture) {
+        if let Some(mut image) = images.get_mut(&pipeline.lookup_texture) {
             *image = crate::gpu_palette::make_lookup_texture(&lookup);
         }
     }
@@ -2372,7 +2368,7 @@ pub(crate) fn process_preview_palette_rebake(
 
     if let (Some(pipeline), Some(editor)) = (pipeline.as_deref_mut(), editor.as_deref()) {
         if let Some(result) = completed_rebake
-            && let Some(image) = images.get_mut(&pipeline.lookup_texture)
+            && let Some(mut image) = images.get_mut(&pipeline.lookup_texture)
         {
             completed_mode = result.mode;
             rebake.mode = result.mode;
@@ -2432,9 +2428,10 @@ pub(crate) fn process_preview_palette_rebake(
         rebake.frames_remaining -= 1;
     }
     let remove = rebake.receiver.is_none() && rebake.frames_remaining == 0;
-    drop(rebake);
     if remove {
-        commands.remove_resource::<PreviewPaletteRebake>();
+        commands.queue(|world: &mut bevy::prelude::World| {
+            world.remove_resource::<PreviewPaletteRebake>();
+        });
     }
 }
 
@@ -2463,14 +2460,14 @@ fn update_preview_palette_materials_for_gpu(
     );
     let input_offset_b = Vec4::new(matching.hue_add, matching.grey_chroma_threshold, 0.0, 0.0);
 
-    if let Some(material) = palette_materials.get_mut(&pipeline.material) {
+    if let Some(mut material) = palette_materials.get_mut(&pipeline.material) {
         material.params = params;
         material.lookup_params = lookup_params;
         material.input_offset_a = input_offset_a;
         material.input_offset_b = input_offset_b;
     }
     if let Some(throttle) = throttle
-        && let Some(material) = display_materials.get_mut(&throttle.display_material)
+        && let Some(mut material) = display_materials.get_mut(&throttle.display_material)
     {
         material.params = params;
         material.lookup_params = display_lookup_params;
@@ -2741,7 +2738,7 @@ fn update_preview_oklch_picker_images(editor: &PreviewPaletteEditor, images: &mu
         (&editor.picker_images.chroma, PreviewOklchCanvasKind::Chroma),
         (&editor.picker_images.hue, PreviewOklchCanvasKind::Hue),
     ] {
-        if let Some(image) = images.get_mut(handle) {
+        if let Some(mut image) = images.get_mut(handle) {
             image.data = Some(render_preview_oklch_picker_pixels(kind, editor.picker));
         }
     }
@@ -4414,7 +4411,7 @@ fn spawn_stats_window(
         .with_child((
             Text::new(initial_stats_text(custom_host)),
             TextFont {
-                font_size: 10.0,
+                font_size: FontSize::Px(10.0),
                 ..default()
             },
             TextColor(Color::srgb(0.86, 0.92, 0.98)),
@@ -4424,7 +4421,7 @@ fn spawn_stats_window(
             parent.spawn((
                 Text::new("custom host"),
                 TextFont {
-                    font_size: 10.0,
+                    font_size: FontSize::Px(10.0),
                     ..default()
                 },
                 TextColor(Color::srgb(0.64, 0.72, 0.80)),
@@ -4471,7 +4468,7 @@ fn spawn_stats_window(
         .with_child((
             Text::new("stream control: idle - Ready"),
             TextFont {
-                font_size: 10.0,
+                font_size: FontSize::Px(10.0),
                 ..default()
             },
             TextColor(Color::srgb(0.70, 0.78, 0.86)),
@@ -4491,7 +4488,7 @@ fn initial_stats_text(custom_host: bool) -> String {
         format!("http://{WEB_ADDR}")
     };
     format!(
-        "Direct Stream Game\n{}\n{}\n{}",
+        "PixelStream\n{}\n{}\n{}",
         stat_line("mode", mode),
         stat_line(
             "stream",
@@ -4522,7 +4519,7 @@ fn compact_input_box<T: Component, U: Component>(
         children![(
             Text::new(placeholder),
             TextFont {
-                font_size: 10.0,
+                font_size: FontSize::Px(10.0),
                 ..default()
             },
             TextColor(Color::srgb(0.86, 0.92, 0.98)),
@@ -4547,7 +4544,7 @@ fn stream_button<T: Component>(label: &'static str, marker: T, color: Color) -> 
         children![(
             Text::new(label),
             TextFont {
-                font_size: 11.0,
+                font_size: FontSize::Px(11.0),
                 ..default()
             },
             TextColor(Color::srgb(0.92, 0.96, 1.0)),
@@ -4559,8 +4556,13 @@ pub(crate) fn update_stats_window(
     config: Res<AppConfig>,
     target: Res<DirectStreamTarget>,
     stats: Res<SharedStats>,
+    time: Res<Time>,
+    mut clock: ResMut<StatsWindowUpdateClock>,
     mut query: Query<&mut Text, With<StatsText>>,
 ) {
+    if !clock.timer.tick(time.delta()).just_finished() {
+        return;
+    }
     let Ok(mut text) = query.single_mut() else {
         return;
     };
@@ -4579,7 +4581,7 @@ fn custom_host_stats_text(
     target: &DirectStreamTarget,
 ) -> String {
     [
-        "Direct Stream Game".to_owned(),
+        "PixelStream".to_owned(),
         stat_line("mode", "custom host stats"),
         stat_line(
             "stream",
@@ -4717,7 +4719,7 @@ fn custom_host_stats_text(
 
 fn preview_stats_text(stats: &crate::stats::StreamStats, target: &DirectStreamTarget) -> String {
     [
-        "Direct Stream Game".to_owned(),
+        "PixelStream".to_owned(),
         stat_line("mode", "preview stats"),
         stat_line(
             "stream",

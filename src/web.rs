@@ -1,6 +1,12 @@
+//! Local custom-host HTTP server and generated browser player.
+//!
+//! The server is intentionally small and loopback-first. It serves frame/audio
+//! streams, chat, panels, overlays, pointer events, and status for the static
+//! browser page generated below.
+
 use crate::{
     audio::CustomAudioPacketHub,
-    chat::LocalChatHub,
+    chat::{LocalChatHub, LocalChatSubmitResult},
     config::AppConfig,
     constants::{
         AUDIO_STREAM_PATH, CUSTOM_AUDIO_CHANNELS, CUSTOM_AUDIO_SAMPLE_RATE, CUSTOM_OVERLAYS_PATH,
@@ -22,6 +28,7 @@ use crate::{
 };
 use bevy::prelude::*;
 use std::{
+    collections::BTreeMap,
     fs,
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
@@ -32,6 +39,9 @@ use std::{
 
 const CUSTOM_STREAM_SERVER_DELAY: Duration = Duration::ZERO;
 const CUSTOM_STREAM_PLAYBACK_BUFFER_SECONDS: f64 = 1.0;
+const MAX_REQUEST_HEADER_BYTES: usize = 16 * 1024;
+const MAX_REQUEST_BODY_BYTES: usize = 32 * 1024;
+const PIXEL_STREAM_SESSION_HEADER: &str = "X-PixelStream-Session";
 
 #[derive(Clone)]
 pub(crate) enum LocalStreamSource {
@@ -140,85 +150,87 @@ fn handle_web_request(
 ) {
     let peer_addr = stream.peer_addr().ok();
     let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
-    let request = read_http_request(&mut stream);
-    let request = String::from_utf8_lossy(&request);
-    let path = request
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .unwrap_or("/");
-    let method = request
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().next())
-        .unwrap_or("GET");
+    let request = match read_http_request(&mut stream) {
+        Ok(request) => request,
+        Err(error) => {
+            serve_http_error(stream, error);
+            return;
+        }
+    };
 
-    if method.eq_ignore_ascii_case("OPTIONS") {
-        serve_options(stream);
+    if request.method.eq_ignore_ascii_case("OPTIONS") {
+        serve_options(stream, &request);
         return;
     }
 
-    if path.starts_with(STREAM_PATH) {
+    if request.path == STREAM_PATH {
         if let LocalStreamSource::Mjpeg { frames, .. } = source {
-            stream_mjpeg(stream, frames, stats);
+            stream_mjpeg(stream, &request, frames, stats);
         } else {
-            serve_not_found(stream);
+            serve_not_found(stream, &request);
         }
-    } else if path.starts_with(PALETTE_STREAM_PATH) {
+    } else if request.path == PALETTE_STREAM_PATH {
         if let LocalStreamSource::Palette { frames, active, .. } = source {
-            stream_palette(stream, frames, stats, active);
+            stream_palette(stream, &request, frames, stats, active);
         } else {
-            serve_not_found(stream);
+            serve_not_found(stream, &request);
         }
-    } else if path.starts_with(AUDIO_STREAM_PATH) {
+    } else if request.path == AUDIO_STREAM_PATH {
         match source {
             LocalStreamSource::Mjpeg { audio, active, .. }
             | LocalStreamSource::Palette { audio, active, .. } => {
-                stream_pcm_audio(stream, audio, stats, active);
+                stream_pcm_audio(stream, &request, audio, stats, active);
             }
         }
-    } else if path.starts_with(LOCAL_CHAT_FEED_PATH) {
+    } else if request.path == LOCAL_CHAT_FEED_PATH {
         if let LocalStreamSource::Palette { chat, .. } = source {
-            serve_local_chat_feed(stream, path, &request, peer_addr, chat);
+            serve_local_chat_feed(stream, &request, peer_addr, chat);
         } else {
-            serve_not_found(stream);
+            serve_not_found(stream, &request);
         }
-    } else if path.starts_with(LOCAL_CHAT_PATH) {
-        if let LocalStreamSource::Palette { chat, .. } = source {
-            submit_local_chat(stream, &request, peer_addr, chat);
+    } else if request.path == LOCAL_CHAT_PATH {
+        if let LocalStreamSource::Palette { chat, active, .. } = source {
+            submit_local_chat(stream, &request, peer_addr, chat, active);
         } else {
-            serve_not_found(stream);
+            serve_not_found(stream, &request);
         }
-    } else if path.starts_with(CUSTOM_PANELS_PATH) {
+    } else if request.path == CUSTOM_PANELS_PATH {
         if let LocalStreamSource::Palette { panels, chat, .. } = source {
             serve_custom_panels(stream, &request, peer_addr, panels, chat);
         } else {
-            serve_not_found(stream);
+            serve_not_found(stream, &request);
         }
-    } else if path.starts_with(CUSTOM_PANEL_ACTION_PATH) {
+    } else if request.path == CUSTOM_PANEL_ACTION_PATH {
         if let LocalStreamSource::Palette {
             chat,
             panel_actions,
+            active,
             ..
         } = source
         {
-            submit_custom_panel_action(stream, &request, peer_addr, chat, panel_actions);
+            submit_custom_panel_action(stream, &request, peer_addr, chat, panel_actions, active);
         } else {
-            serve_not_found(stream);
+            serve_not_found(stream, &request);
         }
-    } else if path.starts_with(CUSTOM_OVERLAYS_PATH) {
+    } else if request.path == CUSTOM_OVERLAYS_PATH {
         if let LocalStreamSource::Palette { overlays, chat, .. } = source {
             serve_custom_overlays(stream, &request, peer_addr, overlays, chat);
         } else {
-            serve_not_found(stream);
+            serve_not_found(stream, &request);
         }
-    } else if path.starts_with(STREAM_CLICK_PATH) {
-        if let LocalStreamSource::Palette { chat, clicks, .. } = source {
-            submit_stream_click(stream, &request, peer_addr, chat, clicks);
+    } else if request.path == STREAM_CLICK_PATH {
+        if let LocalStreamSource::Palette {
+            chat,
+            clicks,
+            active,
+            ..
+        } = source
+        {
+            submit_stream_click(stream, &request, peer_addr, chat, clicks, active);
         } else {
-            serve_not_found(stream);
+            serve_not_found(stream, &request);
         }
-    } else if path.starts_with(STREAM_STATUS_PATH) {
+    } else if request.path == STREAM_STATUS_PATH {
         if let LocalStreamSource::Palette {
             frames,
             active,
@@ -227,27 +239,42 @@ fn handle_web_request(
         } = source
         {
             serve_stream_status(
-                stream, frames, active, stats, &branding, &layout, chat_panel,
+                stream, &request, frames, active, stats, &branding, &layout, chat_panel,
             );
         } else {
-            serve_not_found(stream);
+            serve_not_found(stream, &request);
         }
-    } else {
+    } else if request.path == "/" || request.path == "/index.html" {
         stats.with_mut(|stats| stats.preview_requests += 1);
-        serve_preview_page(stream, &source, &branding, &layout);
+        serve_preview_page(stream, &request, &source, &branding, &layout);
+    } else {
+        serve_not_found(stream, &request);
     }
 }
 
-fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
+#[derive(Clone, Debug)]
+struct HttpRequest {
+    method: String,
+    path: String,
+    query: String,
+    headers: BTreeMap<String, String>,
+    body: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum HttpRequestError {
+    BadRequest,
+    PayloadTooLarge,
+    MethodNotAllowed,
+}
+
+fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpRequestError> {
     let mut request = Vec::with_capacity(4096);
     let mut buffer = [0; 4096];
     let mut header_end = None;
     let mut content_length = 0usize;
 
-    loop {
-        let Ok(bytes_read) = stream.read(&mut buffer) else {
-            break;
-        };
+    while let Ok(bytes_read) = stream.read(&mut buffer) {
         if bytes_read == 0 {
             break;
         }
@@ -257,21 +284,73 @@ fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
             header_end = find_header_end(&request);
             if let Some(end) = header_end {
                 content_length = parse_content_length(&request[..end]);
+                if end > MAX_REQUEST_HEADER_BYTES || content_length > MAX_REQUEST_BODY_BYTES {
+                    return Err(HttpRequestError::PayloadTooLarge);
+                }
             }
         }
 
-        if let Some(end) = header_end {
-            if request.len() >= end + content_length {
-                break;
-            }
-        }
-
-        if request.len() > 64 * 1024 {
+        if let Some(end) = header_end
+            && request.len() >= end + content_length
+        {
             break;
+        }
+
+        if request.len() > MAX_REQUEST_HEADER_BYTES + MAX_REQUEST_BODY_BYTES {
+            return Err(HttpRequestError::PayloadTooLarge);
         }
     }
 
-    request
+    parse_http_request(&request)
+}
+
+fn parse_http_request(request: &[u8]) -> Result<HttpRequest, HttpRequestError> {
+    let header_end = find_header_end(request).ok_or(HttpRequestError::BadRequest)?;
+    let headers =
+        std::str::from_utf8(&request[..header_end]).map_err(|_| HttpRequestError::BadRequest)?;
+    let mut lines = headers.lines();
+    let request_line = lines.next().ok_or(HttpRequestError::BadRequest)?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().ok_or(HttpRequestError::BadRequest)?;
+    let target = parts.next().ok_or(HttpRequestError::BadRequest)?;
+    let version = parts.next().ok_or(HttpRequestError::BadRequest)?;
+    if parts.next().is_some() || !version.starts_with("HTTP/1.") {
+        return Err(HttpRequestError::BadRequest);
+    }
+    if !matches!(method, "GET" | "POST" | "OPTIONS") {
+        return Err(HttpRequestError::MethodNotAllowed);
+    }
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    if !path.starts_with('/') || path.contains("..") || path.contains('\\') {
+        return Err(HttpRequestError::BadRequest);
+    }
+
+    let mut parsed_headers = BTreeMap::new();
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            return Err(HttpRequestError::BadRequest);
+        };
+        parsed_headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_owned());
+    }
+
+    let content_length = parse_content_length(&request[..header_end]);
+    let body_start = header_end;
+    let body_end = body_start
+        .checked_add(content_length)
+        .ok_or(HttpRequestError::PayloadTooLarge)?;
+    if body_end > request.len() {
+        return Err(HttpRequestError::BadRequest);
+    }
+    Ok(HttpRequest {
+        method: method.to_owned(),
+        path: path.to_owned(),
+        query: query.to_owned(),
+        headers: parsed_headers,
+        body: request[body_start..body_end].to_vec(),
+    })
 }
 
 fn find_header_end(request: &[u8]) -> Option<usize> {
@@ -296,6 +375,7 @@ fn parse_content_length(headers: &[u8]) -> usize {
 
 fn serve_preview_page(
     mut stream: TcpStream,
+    request: &HttpRequest,
     source: &LocalStreamSource,
     branding: &CustomHostBranding,
     layout: &CustomHostLayout,
@@ -305,19 +385,21 @@ fn serve_preview_page(
         LocalStreamSource::Palette { .. } => palette_stream_page_html(branding, layout),
     };
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{}\r\nConnection: close\r\n\r\n{}",
         body.len(),
+        cors_headers(request),
         body
     );
 
     let _ = stream.write_all(response.as_bytes());
 }
 
-fn serve_not_found(mut stream: TcpStream) {
+fn serve_not_found(mut stream: TcpStream, request: &HttpRequest) {
     let body = "Not found";
     let response = format!(
-        "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n{}\r\nConnection: close\r\n\r\n{}",
         body.len(),
+        cors_headers(request),
         body
     );
     let _ = stream.write_all(response.as_bytes());
@@ -325,6 +407,7 @@ fn serve_not_found(mut stream: TcpStream) {
 
 fn serve_stream_status(
     mut stream: TcpStream,
+    request: &HttpRequest,
     frame_hub: PaletteFrameHub,
     active: CustomStreamState,
     stats: SharedStats,
@@ -364,10 +447,11 @@ fn serve_stream_status(
         && frame_hub
             .has_delayed_encoded_start_batch(CUSTOM_STREAM_SERVER_DELAY, active.batch_size());
     let body = format!(
-        r#"{{"online":{},"stream_ready":{},"version":"{}","branding":{{"page_title":"{}","header_title":"{}"}},"layout":{{"max_player_width_px":{},"prefer_larger_player":{},"minimizable_player":{},"start_player_minimized":{}}},"chat_panel":{{"requested":{},"title":"{}"}},"width":{},"height":{},"fps":{},"audio_delay_ms":{},"video_latency_ms_estimate":{},"batch_duration_ms":{},"readback_latency_ms":{},"http_batch_latency_ms":{}}}"#,
+        r#"{{"online":{},"stream_ready":{},"version":"{}","session_token":"{}","branding":{{"page_title":"{}","header_title":"{}"}},"layout":{{"max_player_width_px":{},"prefer_larger_player":{},"minimizable_player":{},"start_player_minimized":{}}},"chat_panel":{{"requested":{},"title":"{}"}},"width":{},"height":{},"fps":{},"audio_delay_ms":{},"video_latency_ms_estimate":{},"batch_duration_ms":{},"readback_latency_ms":{},"http_batch_latency_ms":{}}}"#,
         active.is_active(),
         stream_ready,
         env!("CARGO_PKG_VERSION"),
+        active.session_token(),
         json_escape(&branding.page_title),
         json_escape(&branding.header_title),
         layout
@@ -389,8 +473,9 @@ fn serve_stream_status(
         rounded_json_number(http_batch_latency_ms),
     );
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store, no-cache, must-revalidate, max-age=0\r\nPragma: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store, no-cache, must-revalidate, max-age=0\r\nPragma: no-cache\r\n{}\r\nConnection: close\r\n\r\n{}",
         body.len(),
+        cors_headers(request),
         body
     );
     let _ = stream.write_all(response.as_bytes());
@@ -406,28 +491,43 @@ fn rounded_json_number(value: f64) -> String {
 
 fn submit_local_chat(
     mut stream: TcpStream,
-    request: &str,
+    request: &HttpRequest,
     peer_addr: Option<SocketAddr>,
     chat: LocalChatHub,
+    active: CustomStreamState,
 ) {
-    let Some((_, body)) = request.split_once("\r\n\r\n") else {
-        serve_bad_request(stream);
+    if !authorized_mutation(request, &active) {
+        serve_forbidden(stream, request);
         return;
-    };
+    }
+    let body = request.body_str();
     let message = body.trim();
     if message.is_empty() || message.len() > 500 {
-        serve_bad_request(stream);
+        serve_bad_request(stream, request);
         return;
     }
     let identity = local_chat_identity(request, peer_addr);
-    let Some(display_name) = chat.submit(identity, message.to_owned()) else {
-        serve_forbidden(stream);
-        return;
+    let body = match chat.submit(identity, message.to_owned()) {
+        LocalChatSubmitResult::Accepted { display_name } => {
+            format!(r#"{{"ok":true,"name":"{}"}}"#, json_escape(&display_name))
+        }
+        LocalChatSubmitResult::Rejected {
+            display_name,
+            reason,
+        } => format!(
+            r#"{{"ok":false,"name":"{}","reason":"{}"}}"#,
+            json_escape(&display_name),
+            reason.code()
+        ),
+        LocalChatSubmitResult::BlockedIdentity => {
+            serve_forbidden(stream, request);
+            return;
+        }
     };
-    let body = format!(r#"{{"ok":true,"name":"{}"}}"#, json_escape(&display_name));
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store, no-cache, must-revalidate, max-age=0\r\nPragma: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store, no-cache, must-revalidate, max-age=0\r\nPragma: no-cache\r\n{}\r\nConnection: close\r\n\r\n{}",
         body.len(),
+        cors_headers(request),
         body
     );
     let _ = stream.write_all(response.as_bytes());
@@ -435,12 +535,12 @@ fn submit_local_chat(
 
 fn serve_local_chat_feed(
     mut stream: TcpStream,
-    path: &str,
-    request: &str,
+    request: &HttpRequest,
     peer_addr: Option<SocketAddr>,
     chat: LocalChatHub,
 ) {
-    let after = query_param(path, "after")
+    let after = request
+        .query_param("after")
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
     let identity_source = local_chat_identity(request, peer_addr);
@@ -485,8 +585,9 @@ fn serve_local_chat_feed(
     }
     body.push_str("]}");
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{}\r\nConnection: close\r\n\r\n{}",
         body.len(),
+        cors_headers(request),
         body
     );
     let _ = stream.write_all(response.as_bytes());
@@ -494,7 +595,7 @@ fn serve_local_chat_feed(
 
 fn serve_custom_panels(
     mut stream: TcpStream,
-    request: &str,
+    request: &HttpRequest,
     peer_addr: Option<SocketAddr>,
     panels: CustomHostPanelHub,
     chat: LocalChatHub,
@@ -528,8 +629,9 @@ fn serve_custom_panels(
     }
     body.push_str("]}");
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{}\r\nConnection: close\r\n\r\n{}",
         body.len(),
+        cors_headers(request),
         body
     );
     let _ = stream.write_all(response.as_bytes());
@@ -537,7 +639,7 @@ fn serve_custom_panels(
 
 fn serve_custom_overlays(
     mut stream: TcpStream,
-    request: &str,
+    request: &HttpRequest,
     peer_addr: Option<SocketAddr>,
     overlays: CustomHostOverlayHub,
     chat: LocalChatHub,
@@ -567,8 +669,9 @@ fn serve_custom_overlays(
     }
     body.push_str("]}");
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{}\r\nConnection: close\r\n\r\n{}",
         body.len(),
+        cors_headers(request),
         body
     );
     let _ = stream.write_all(response.as_bytes());
@@ -576,18 +679,23 @@ fn serve_custom_overlays(
 
 fn submit_custom_panel_action(
     mut stream: TcpStream,
-    request: &str,
+    request: &HttpRequest,
     peer_addr: Option<SocketAddr>,
     chat: LocalChatHub,
     panel_actions: CustomHostPanelActionHub,
+    active: CustomStreamState,
 ) {
-    let body = request_body(request);
+    if !authorized_mutation(request, &active) {
+        serve_forbidden(stream, request);
+        return;
+    }
+    let body = request.body_str();
     let Some(panel_id) = json_string_field(body, "panel_id") else {
-        serve_bad_request(stream);
+        serve_bad_request(stream, request);
         return;
     };
     let Some(action_id) = json_string_field(body, "action_id") else {
-        serve_bad_request(stream);
+        serve_bad_request(stream, request);
         return;
     };
     if panel_id.trim().is_empty()
@@ -595,7 +703,7 @@ fn submit_custom_panel_action(
         || panel_id.len() > 256
         || action_id.len() > 256
     {
-        serve_bad_request(stream);
+        serve_bad_request(stream, request);
         return;
     }
 
@@ -609,8 +717,9 @@ fn submit_custom_panel_action(
     });
     let body = r#"{"ok":true}"#;
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{}\r\nConnection: close\r\n\r\n{}",
         body.len(),
+        cors_headers(request),
         body
     );
     let _ = stream.write_all(response.as_bytes());
@@ -618,18 +727,23 @@ fn submit_custom_panel_action(
 
 fn submit_stream_click(
     mut stream: TcpStream,
-    request: &str,
+    request: &HttpRequest,
     peer_addr: Option<SocketAddr>,
     chat: LocalChatHub,
     clicks: StreamPointerClickHub,
+    active: CustomStreamState,
 ) {
-    let body = request_body(request);
+    if !authorized_mutation(request, &active) {
+        serve_forbidden(stream, request);
+        return;
+    }
+    let body = request.body_str();
     let Some(x) = json_u32_field(body, "x") else {
-        serve_bad_request(stream);
+        serve_bad_request(stream, request);
         return;
     };
     let Some(y) = json_u32_field(body, "y") else {
-        serve_bad_request(stream);
+        serve_bad_request(stream, request);
         return;
     };
     let normalized_x = json_f32_field(body, "normalized_x").unwrap_or(0.0);
@@ -650,28 +764,48 @@ fn submit_stream_click(
     });
     let body = r#"{"ok":true}"#;
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{}\r\nConnection: close\r\n\r\n{}",
         body.len(),
+        cors_headers(request),
         body
     );
     let _ = stream.write_all(response.as_bytes());
 }
 
-fn query_param(path: &str, name: &str) -> Option<String> {
-    let (_, query) = path.split_once('?')?;
-    query.split('&').find_map(|pair| {
-        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        (key == name).then(|| value.to_owned())
-    })
+impl HttpRequest {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(String::as_str)
+    }
+
+    fn query_param(&self, name: &str) -> Option<String> {
+        self.query.split('&').find_map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            (key == name).then(|| value.to_owned())
+        })
+    }
+
+    fn body_str(&self) -> &str {
+        std::str::from_utf8(&self.body).unwrap_or("")
+    }
 }
 
-fn local_chat_identity(request: &str, peer_addr: Option<SocketAddr>) -> String {
-    header_value(request, "x-directstream-device-id")
+fn local_chat_identity(request: &HttpRequest, peer_addr: Option<SocketAddr>) -> String {
+    request
+        .header("x-directstream-device-id")
+        .map(ToOwned::to_owned)
         .and_then(validate_device_id)
         .map(|id| format!("device:{id}"))
-        .or_else(|| header_value(request, "cf-connecting-ip").map(|ip| format!("ip:{ip}")))
         .or_else(|| {
-            header_value(request, "x-forwarded-for")
+            request
+                .header("cf-connecting-ip")
+                .map(|ip| format!("ip:{ip}"))
+        })
+        .or_else(|| {
+            request
+                .header("x-forwarded-for")
+                .map(ToOwned::to_owned)
                 .and_then(first_forwarded_ip)
                 .map(|ip| format!("ip:{ip}"))
         })
@@ -690,15 +824,6 @@ fn validate_device_id(id: String) -> Option<String> {
         .then(|| id.to_owned())
 }
 
-fn header_value(request: &str, name: &str) -> Option<String> {
-    request.lines().find_map(|line| {
-        let (key, value) = line.split_once(':')?;
-        key.trim()
-            .eq_ignore_ascii_case(name)
-            .then(|| value.trim().to_owned())
-    })
-}
-
 fn first_forwarded_ip(value: String) -> Option<String> {
     value
         .split(',')
@@ -712,13 +837,6 @@ fn current_time_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
         .unwrap_or(0)
-}
-
-fn request_body(request: &str) -> &str {
-    request
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or("")
 }
 
 fn json_u32_field(body: &str, name: &str) -> Option<u32> {
@@ -957,34 +1075,102 @@ fn json_f32(value: f32) -> String {
     }
 }
 
-fn serve_bad_request(mut stream: TcpStream) {
+fn authorized_mutation(request: &HttpRequest, active: &CustomStreamState) -> bool {
+    // Device identity is for audience scoping, not authorization. Mutating
+    // browser calls also need a trusted Origin and the per-process session token
+    // that the player learns from /status.json.
+    origin_allowed(request)
+        && request
+            .header(PIXEL_STREAM_SESSION_HEADER)
+            .is_some_and(|token| token == active.session_token())
+}
+
+fn origin_allowed(request: &HttpRequest) -> bool {
+    let Some(origin) = request.header("origin") else {
+        return true;
+    };
+    allowed_browser_origin(origin)
+}
+
+fn allowed_browser_origin(origin: &str) -> bool {
+    matches!(
+        origin,
+        "https://stream.humanbeangames.com"
+            | "https://game.humanbeangames.com"
+            | "https://humanbeangames.com"
+            | "https://www.humanbeangames.com"
+            | "http://127.0.0.1:8080"
+            | "http://localhost:8080"
+    ) || origin.starts_with("http://127.0.0.1:")
+        || origin.starts_with("http://localhost:")
+}
+
+fn cors_headers(request: &HttpRequest) -> String {
+    let allow_origin = match request.header("origin") {
+        Some(origin) if allowed_browser_origin(origin) => origin,
+        Some(_) => "null",
+        None => "*",
+    };
+    format!(
+        "Access-Control-Allow-Origin: {allow_origin}\r\nAccess-Control-Allow-Headers: Content-Type, X-DirectStream-Device-Id, {PIXEL_STREAM_SESSION_HEADER}\r\nAccess-Control-Expose-Headers: X-Stream-Fps, X-Playback-Buffer-Seconds"
+    )
+}
+
+fn serve_http_error(mut stream: TcpStream, error: HttpRequestError) {
+    let (status, body) = match error {
+        HttpRequestError::BadRequest => ("400 Bad Request", "bad request"),
+        HttpRequestError::PayloadTooLarge => ("413 Payload Too Large", "payload too large"),
+        HttpRequestError::MethodNotAllowed => ("405 Method Not Allowed", "method not allowed"),
+    };
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = stream.write_all(response.as_bytes());
+}
+
+fn serve_bad_request(mut stream: TcpStream, request: &HttpRequest) {
     let body = "bad request";
     let response = format!(
-        "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n{}\r\nConnection: close\r\n\r\n{}",
         body.len(),
+        cors_headers(request),
         body
     );
     let _ = stream.write_all(response.as_bytes());
 }
 
-fn serve_forbidden(mut stream: TcpStream) {
+fn serve_forbidden(mut stream: TcpStream, request: &HttpRequest) {
     let body = "forbidden";
     let response = format!(
-        "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n{}\r\nConnection: close\r\n\r\n{}",
         body.len(),
+        cors_headers(request),
         body
     );
     let _ = stream.write_all(response.as_bytes());
 }
 
-fn serve_options(mut stream: TcpStream) {
-    let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-DirectStream-Device-Id\r\nAccess-Control-Max-Age: 86400\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+fn serve_options(mut stream: TcpStream, request: &HttpRequest) {
+    let response = format!(
+        "HTTP/1.1 204 No Content\r\n{}\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Max-Age: 86400\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        cors_headers(request)
+    );
     let _ = stream.write_all(response.as_bytes());
 }
 
-fn stream_mjpeg(mut stream: TcpStream, frame_hub: EncodedFrameHub, stats: SharedStats) {
+fn stream_mjpeg(
+    mut stream: TcpStream,
+    request: &HttpRequest,
+    frame_hub: EncodedFrameHub,
+    stats: SharedStats,
+) {
     stats.with_mut(|stats| stats.stream_clients += 1);
-    let header = "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n";
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-store\r\n{}\r\nConnection: close\r\n\r\n",
+        cors_headers(request)
+    );
     if stream.write_all(header.as_bytes()).is_err() {
         stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));
         return;
@@ -1010,6 +1196,7 @@ fn stream_mjpeg(mut stream: TcpStream, frame_hub: EncodedFrameHub, stats: Shared
 
 fn stream_palette(
     mut stream: TcpStream,
+    request: &HttpRequest,
     frame_hub: PaletteFrameHub,
     stats: SharedStats,
     active: CustomStreamState,
@@ -1017,8 +1204,9 @@ fn stream_palette(
     if !active.is_active() {
         let body = "stream offline";
         let response = format!(
-            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{}\r\nConnection: close\r\n\r\n{}",
             body.len(),
+            cors_headers(request),
             body
         );
         let _ = stream.write_all(response.as_bytes());
@@ -1052,7 +1240,8 @@ fn stream_palette(
     };
     let stream_fps = active.fps();
     let header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Expose-Headers: X-Stream-Fps, X-Playback-Buffer-Seconds\r\nConnection: close\r\nX-Stream-Fps: {stream_fps}\r\nX-Playback-Buffer-Seconds: {CUSTOM_STREAM_PLAYBACK_BUFFER_SECONDS:.3}\r\n\r\n"
+        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\n{}\r\nConnection: close\r\nX-Stream-Fps: {stream_fps}\r\nX-Playback-Buffer-Seconds: {CUSTOM_STREAM_PLAYBACK_BUFFER_SECONDS:.3}\r\n\r\n",
+        cors_headers(request)
     );
     let mut last_sequence = start_batch.batch.sequence;
     if stream.write_all(header.as_bytes()).is_err()
@@ -1069,15 +1258,12 @@ fn stream_palette(
         stats.custom_stage = "streaming";
     });
 
-    loop {
-        let Some(batch) = frame_hub.wait_for_delayed_encoded_batch_after(
-            last_sequence,
-            CUSTOM_STREAM_SERVER_DELAY,
-            &stats,
-            || active.is_active(),
-        ) else {
-            break;
-        };
+    while let Some(batch) = frame_hub.wait_for_delayed_encoded_batch_after(
+        last_sequence,
+        CUSTOM_STREAM_SERVER_DELAY,
+        &stats,
+        || active.is_active(),
+    ) {
         if !active.is_active() || write_palette_batch(&mut stream, &batch.packets).is_err() {
             break;
         }
@@ -1115,13 +1301,15 @@ fn write_palette_packets(stream: &mut TcpStream, packets: &[Vec<u8>]) -> std::io
 
 fn stream_pcm_audio(
     mut stream: TcpStream,
+    request: &HttpRequest,
     audio: CustomAudioPacketHub,
     stats: SharedStats,
     active: CustomStreamState,
 ) {
     stats.with_mut(|stats| stats.stream_clients += 1);
     let header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\nX-Audio-Format: mulaw8\r\nX-Audio-Sample-Rate: {CUSTOM_AUDIO_SAMPLE_RATE}\r\nX-Audio-Channels: {CUSTOM_AUDIO_CHANNELS}\r\n\r\n"
+        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\n{}\r\nConnection: close\r\nX-Audio-Format: mulaw8\r\nX-Audio-Sample-Rate: {CUSTOM_AUDIO_SAMPLE_RATE}\r\nX-Audio-Channels: {CUSTOM_AUDIO_CHANNELS}\r\n\r\n",
+        cors_headers(request)
     );
     if stream.write_all(header.as_bytes()).is_err() {
         stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));
@@ -1156,7 +1344,7 @@ fn mjpeg_stream_page_html() -> String {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Direct Stream Game</title>
+  <title>PixelStream</title>
   <style>
     :root {{ color-scheme: dark; font-family: Arial, sans-serif; background: #111318; color: #eef3f8; }}
     body {{ margin: 0; min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }}
@@ -1171,7 +1359,7 @@ fn mjpeg_stream_page_html() -> String {
   </style>
 </head>
 <body>
-  <header>Direct Stream Game local preview</header>
+  <header>PixelStream local preview</header>
   <main>
     <img id="stream" alt="Bevy GPU readback stream" src="{STREAM_PATH}">
   </main>
@@ -1448,11 +1636,13 @@ fn palette_stream_page_html_with_options(
     let audioLoopRunning = false;
     let streamOnline = false;
     let serverStreamReady = false;
+    let statusPollDelayMs = 500;
     let requestedUiVisible = false;
     let lastChatId = 0;
     let chatGeneration = null;
     let shownChatIds = new Set();
     let currentViewer = null;
+    let serverSessionToken = "";
     let currentOverlays = [];
     const overlayImageCache = new Map();
     let lastAudioLeft = 0;
@@ -1462,7 +1652,8 @@ fn palette_stream_page_html_with_options(
     const audioPlaybackSampleRate = 48000;
     const audioUpsampleFactor = audioPlaybackSampleRate / audioTransportSampleRate;
     const deviceIdHeaderName = "X-DirectStream-Device-Id";
-    const deviceIdStorageKey = "directstream_device_id";
+    const deviceIdStorageKey = "pixelstream_device_id";
+    const legacyDeviceIdStorageKey = "directstream_device_id";
     const playerMinimizable = {minimizable_player};
     const startPlayerMinimized = {start_player_minimized};
     const staticBranding = {{
@@ -1544,7 +1735,12 @@ fn palette_stream_page_html_with_options(
       try {{
         let id = localStorage.getItem(deviceIdStorageKey);
         if (!isValidDeviceId(id)) {{
+          id = localStorage.getItem(legacyDeviceIdStorageKey);
+        }}
+        if (!isValidDeviceId(id)) {{
           id = makeDeviceId();
+        }}
+        if (localStorage.getItem(deviceIdStorageKey) !== id) {{
           localStorage.setItem(deviceIdStorageKey, id);
         }}
         return id;
@@ -1585,10 +1781,20 @@ fn palette_stream_page_html_with_options(
       return {{ ...options, headers }};
     }}
 
-    window.DirectStreamResetLocalIdentity = () => {{
+    function sessionFetchOptions(options = {{}}) {{
+      const next = identityFetchOptions(options);
+      if (serverSessionToken) {{
+        next.headers.set("{PIXEL_STREAM_SESSION_HEADER}", serverSessionToken);
+      }}
+      return next;
+    }}
+
+    window.PixelStreamResetLocalIdentity = () => {{
       localStorage.removeItem(deviceIdStorageKey);
-      console.info("Direct Stream local identity reset. Reload the page to use a new identity.");
+      localStorage.removeItem(legacyDeviceIdStorageKey);
+      console.info("PixelStream local identity reset. Reload the page to use a new identity.");
     }};
+    window.DirectStreamResetLocalIdentity = window.PixelStreamResetLocalIdentity;
 
     function resetStreamState() {{
       width = 0;
@@ -2173,8 +2379,10 @@ fn palette_stream_page_html_with_options(
         try {{
           const response = await fetch("{stream_status_url}?t=" + Date.now(), {{ cache: "no-store" }});
           const status = await response.json();
+          statusPollDelayMs = 500;
           streamOnline = !!status.online;
           serverStreamReady = !!status.stream_ready;
+          serverSessionToken = typeof status.session_token === "string" ? status.session_token : "";
           streamLoading.hidden = !streamOnline || (serverStreamReady && streamReady);
           setRequestedUiVisible(streamOnline && !!(status.chat_panel && status.chat_panel.requested), status.chat_panel);
           applyRuntimeBranding(status);
@@ -2185,11 +2393,13 @@ fn palette_stream_page_html_with_options(
         }} catch (error) {{
           streamOnline = false;
           serverStreamReady = false;
+          serverSessionToken = "";
           streamLoading.hidden = true;
           setRequestedUiVisible(false, null);
           updateUnmuteOverlay();
+          statusPollDelayMs = Math.min(10000, Math.max(1000, Math.round(statusPollDelayMs * 1.7)));
         }}
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, statusPollDelayMs));
       }}
     }}
 
@@ -2311,11 +2521,10 @@ fn palette_stream_page_html_with_options(
         height
       );
       if (!streamPoint) return;
-      fetch("{stream_click_url}", {{
+      fetch("{stream_click_url}", sessionFetchOptions({{
         method: "POST",
         headers: {{
           "Content-Type": "application/json",
-          [deviceIdHeaderName]: getDeviceId(),
         }},
         body: JSON.stringify({{
           client_x: event.clientX,
@@ -2326,7 +2535,7 @@ fn palette_stream_page_html_with_options(
           normalized_y: streamPoint.normalizedY,
         }}),
         cache: "no-store",
-      }}).catch(error => console.error(error));
+      }})).catch(error => console.error(error));
     }});
 
     function getRenderedStreamRect(canvasElement, streamWidth, streamHeight) {{
@@ -2396,15 +2605,14 @@ fn palette_stream_page_html_with_options(
       const message = chatInput.value.trim();
       if (!message) return;
       chatInput.value = "";
-      fetch("{local_chat_url}", {{
+      fetch("{local_chat_url}", sessionFetchOptions({{
         method: "POST",
         headers: {{
           "Content-Type": "text/plain;charset=utf-8",
-          [deviceIdHeaderName]: getDeviceId(),
         }},
         body: message,
         cache: "no-store",
-      }})
+      }}))
         .then(response => response.ok ? response.json() : Promise.reject(new Error(`chat failed: ${{response.status}}`)))
         .then(() => fetchChatFeed())
         .catch(error => {{
@@ -2888,18 +3096,17 @@ fn palette_stream_page_html_with_options(
 
     function submitPanelAction(panelId, actionId) {{
       if (!panelId || !actionId) return;
-      fetch("{custom_panel_action_url}", {{
+      fetch("{custom_panel_action_url}", sessionFetchOptions({{
         method: "POST",
         headers: {{
           "Content-Type": "application/json",
-          [deviceIdHeaderName]: getDeviceId(),
         }},
         body: JSON.stringify({{
           panel_id: panelId,
           action_id: actionId,
         }}),
         cache: "no-store",
-      }}).catch(error => console.error(error));
+      }})).catch(error => console.error(error));
     }}
 
     function drawCustomOverlays() {{
@@ -3171,30 +3378,54 @@ mod tests {
 
     #[test]
     fn local_identity_prefers_valid_device_id() {
-        let request = "GET /custom-panels HTTP/1.1\r\n\
+        let request = parse_http_request(
+            b"GET /custom-panels HTTP/1.1\r\n\
             X-DirectStream-Device-Id: 550e8400-e29b-41d4-a716-446655440000\r\n\
-            CF-Connecting-IP: 203.0.113.10\r\n\r\n";
+            CF-Connecting-IP: 203.0.113.10\r\n\r\n",
+        )
+        .unwrap();
 
         assert_eq!(
-            local_chat_identity(request, None),
+            local_chat_identity(&request, None),
             "device:550e8400-e29b-41d4-a716-446655440000"
         );
     }
 
     #[test]
     fn local_identity_rejects_unsafe_device_id_and_falls_back_to_ip() {
-        let request = "GET /custom-panels HTTP/1.1\r\n\
+        let request = parse_http_request(
+            b"GET /custom-panels HTTP/1.1\r\n\
             X-DirectStream-Device-Id: ../../nope\r\n\
-            X-Forwarded-For: 198.51.100.8, 198.51.100.9\r\n\r\n";
+            X-Forwarded-For: 198.51.100.8, 198.51.100.9\r\n\r\n",
+        )
+        .unwrap();
 
-        assert_eq!(local_chat_identity(request, None), "ip:198.51.100.8");
+        assert_eq!(local_chat_identity(&request, None), "ip:198.51.100.8");
     }
 
     #[test]
     fn local_identity_uses_peer_ip_without_headers() {
-        let request = "GET /custom-panels HTTP/1.1\r\n\r\n";
+        let request = parse_http_request(b"GET /custom-panels HTTP/1.1\r\n\r\n").unwrap();
         let peer = "192.0.2.44:8080".parse().ok();
 
-        assert_eq!(local_chat_identity(request, peer), "ip:192.0.2.44");
+        assert_eq!(local_chat_identity(&request, peer), "ip:192.0.2.44");
+    }
+
+    #[test]
+    fn parser_rejects_path_traversal_targets() {
+        assert!(matches!(
+            parse_http_request(b"GET /../secret HTTP/1.1\r\n\r\n"),
+            Err(HttpRequestError::BadRequest)
+        ));
+    }
+
+    #[test]
+    fn cors_rejects_unknown_browser_origins() {
+        let request = parse_http_request(
+            b"GET /status.json HTTP/1.1\r\nOrigin: https://example.invalid\r\n\r\n",
+        )
+        .unwrap();
+
+        assert!(cors_headers(&request).contains("Access-Control-Allow-Origin: null"));
     }
 }

@@ -1,3 +1,5 @@
+//! Small built-in demo scene for exercising PixelStream without a downstream game.
+
 use crate::{
     DirectStreamSet, DirectText, PlayStreamSound, StreamAudioClip, StreamChatCommand,
     StreamChatSender, StreamCommandAppExt, app::direct_stream_app,
@@ -37,18 +39,10 @@ pub struct DemoSfxClip(Handle<StreamAudioClip>);
 #[derive(Resource, Default)]
 pub struct DemoMusicStarted(bool);
 
+#[derive(Default)]
 pub struct DemoVideoBackground {
     image: Handle<Image>,
     worker: Option<DemoVideoWorker>,
-}
-
-impl Default for DemoVideoBackground {
-    fn default() -> Self {
-        Self {
-            image: Handle::default(),
-            worker: None,
-        }
-    }
 }
 
 pub struct DemoVideoWorker {
@@ -64,7 +58,7 @@ impl Drop for DemoVideoWorker {
 
 pub fn run_demo() {
     let mut app = direct_stream_app();
-    app.insert_non_send_resource(DemoVideoBackground::default())
+    app.insert_non_send(DemoVideoBackground::default())
         .add_stream_command("boing", handle_demo_boing_command)
         .add_systems(Startup, setup_demo_scene.after(DirectStreamSet::Setup))
         .add_systems(
@@ -116,7 +110,7 @@ pub fn setup_demo_scene(
         .with_child((
             Text::new("HelloWorld"),
             TextFont {
-                font_size: text_size,
+                font_size: FontSize::Px(text_size),
                 ..default()
             },
             TextColor(Color::srgb(0.92, 0.96, 1.0)),
@@ -197,7 +191,7 @@ pub fn update_demo_video_background(
     let Some(frame) = latest_frame else {
         return;
     };
-    if let Some(image) = images.get_mut(&image_handle) {
+    if let Some(mut image) = images.get_mut(&image_handle) {
         image.data = Some(frame);
     }
 }

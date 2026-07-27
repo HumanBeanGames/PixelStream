@@ -1,3 +1,5 @@
+//! CPU-side preview encoder helpers.
+
 use crate::{
     frames::{EncodedFrameHub, RawFrame, RawFramePixels},
     stats::SharedStats,

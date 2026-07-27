@@ -1,3 +1,8 @@
+//! PixelStream Bevy plugin.
+//!
+//! The plugin registers messages, setup systems, capture/readback, direct
+//! overlays, preview UI, stream control, and custom-host bridge polling.
+
 use crate::{
     DirectStreamSet, PlayStreamSound,
     audio::{StreamAudioClip, StreamAudioMixer, collect_stream_audio_events, mix_stream_audio},
@@ -15,7 +20,7 @@ use crate::{
     direct_world_sprite::DirectWorldSpritePlugin,
     gpu_palette::GpuPalettePlugin,
     scene::{
-        enter_preview_fullscreen, handle_preview_oklch_picker_interactions,
+        StatsWindowUpdateClock, handle_preview_oklch_picker_interactions,
         handle_preview_palette_checkbox_changes, handle_preview_palette_editor_interactions,
         handle_preview_pixel_debug_clicks, process_preview_palette_rebake,
         process_preview_palette_save, request_preview_palette_validation,
@@ -24,16 +29,18 @@ use crate::{
         update_preview_pixel_debug_text, update_stats_window,
     },
     stream_control::{
-        handle_direct_stream_start_requests, handle_direct_stream_stop_requests,
-        handle_stream_input_box_interactions, handle_stream_key_typing,
-        handle_stream_misc_button_interactions, handle_stream_start_interactions,
-        handle_stream_stop_interactions, keep_custom_host_alive_when_window_occluded,
+        drain_window_occluded_events, handle_direct_stream_start_requests,
+        handle_direct_stream_stop_requests, handle_stream_input_box_interactions,
+        handle_stream_key_typing, handle_stream_misc_button_interactions,
+        handle_stream_start_interactions, handle_stream_stop_interactions,
         update_stream_control_ui,
     },
+    surface_primer::SurfacePrimerPlugin,
     web::start_local_web_server_from_resources,
 };
-use bevy::{input_focus::InputDispatchPlugin, prelude::*};
-use bevy_ui_widgets::{UiWidgetsPlugins, checkbox_self_update, slider_self_update};
+use bevy::prelude::*;
+use bevy_ui_widgets::{checkbox_self_update, slider_self_update};
+use pixel_stream_settings::PixelSettingsPlugin;
 
 pub struct DirectStreamPlugin;
 
@@ -41,9 +48,10 @@ impl Plugin for DirectStreamPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<StreamAudioClip>()
             .init_resource::<StreamAudioMixer>()
+            .init_resource::<StatsWindowUpdateClock>()
             .add_plugins((
-                UiWidgetsPlugins,
-                InputDispatchPlugin,
+                PixelSettingsPlugin,
+                SurfacePrimerPlugin,
                 GpuPalettePlugin,
                 DirectBackdropSpritePlugin,
                 DirectWorldSpritePlugin,
@@ -90,7 +98,7 @@ impl Plugin for DirectStreamPlugin {
                     handle_stream_stop_interactions,
                     handle_direct_stream_start_requests,
                     handle_direct_stream_stop_requests,
-                    keep_custom_host_alive_when_window_occluded,
+                    drain_window_occluded_events,
                     handle_stream_misc_button_interactions,
                 ),
             )
@@ -99,7 +107,6 @@ impl Plugin for DirectStreamPlugin {
                 (
                     update_stream_control_ui,
                     update_stats_window,
-                    enter_preview_fullscreen,
                     update_preview_layout,
                     handle_preview_palette_editor_interactions,
                     handle_preview_palette_checkbox_changes,

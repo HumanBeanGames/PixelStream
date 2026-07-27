@@ -1,3 +1,8 @@
+//! Start/stop control path for custom-host streaming.
+//!
+//! UI buttons and programmatic requests both flow through the same validation
+//! and state update logic.
+
 use crate::{
     audio::DirectStreamAudioTarget,
     chat::LocalChatHub,
@@ -263,6 +268,7 @@ pub(crate) struct CustomStreamState {
     fps: Arc<AtomicU32>,
     batch_size: Arc<AtomicUsize>,
     audio_delay_ms: Arc<AtomicU32>,
+    session_token: Arc<String>,
 }
 
 impl CustomStreamState {
@@ -274,6 +280,7 @@ impl CustomStreamState {
             fps: Arc::new(AtomicU32::new(1)),
             batch_size: Arc::new(AtomicUsize::new(1)),
             audio_delay_ms: Arc::new(AtomicU32::new(1_000)),
+            session_token: Arc::new(make_session_token()),
         }
     }
 
@@ -322,6 +329,25 @@ impl CustomStreamState {
         self.audio_delay_ms
             .store(audio_delay_ms.min(10_000), Ordering::Relaxed);
     }
+
+    pub(crate) fn session_token(&self) -> &str {
+        &self.session_token
+    }
+}
+
+fn make_session_token() -> String {
+    let mut bytes = [0u8; 24];
+    if getrandom::fill(&mut bytes).is_err() {
+        let fallback = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+            ^ u128::from(std::process::id());
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            *byte = ((fallback >> ((index % 16) * 8)) & 0xff) as u8;
+        }
+    }
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn estimated_video_latency_ms(
@@ -339,7 +365,7 @@ fn valid_custom_dimensions(width: u32, height: u32, fps: u32) -> bool {
     width == height
         && (64..=256).contains(&width)
         && (64..=256).contains(&height)
-        && width % 8 == 0
+        && width.is_multiple_of(8)
         && (1..=60).contains(&fps)
 }
 
@@ -491,25 +517,8 @@ pub(crate) fn handle_stream_stop_interactions(
     }
 }
 
-pub(crate) fn keep_custom_host_alive_when_window_occluded(
-    mut occluded_events: MessageReader<WindowOccluded>,
-    mut windows: Query<&mut Window>,
-    control: Res<StreamControl>,
-) {
-    if !control.is_streaming() {
-        for _ in occluded_events.read() {}
-        return;
-    }
-
-    for event in occluded_events.read() {
-        if !event.occluded {
-            continue;
-        }
-
-        if let Ok(mut window) = windows.get_mut(event.window) {
-            window.visible = false;
-        }
-    }
+pub(crate) fn drain_window_occluded_events(mut occluded_events: MessageReader<WindowOccluded>) {
+    for _ in occluded_events.read() {}
 }
 
 pub(crate) fn handle_direct_stream_start_requests(
@@ -612,11 +621,11 @@ pub(crate) fn handle_stream_misc_button_interactions(
     }
 
     for (interaction, mut color) in &mut buttons.p1() {
-        if *interaction == Interaction::Pressed {
-            if let Some(chat) = &local_chat {
-                chat.purge();
-                control.status = "Purged local chat".to_owned();
-            }
+        if *interaction == Interaction::Pressed
+            && let Some(chat) = &local_chat
+        {
+            chat.purge();
+            control.status = "Purged local chat".to_owned();
         }
         *color = button_color(*interaction, Color::srgb(0.17, 0.10, 0.04));
     }

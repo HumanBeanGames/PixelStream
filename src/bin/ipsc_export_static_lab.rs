@@ -1,3 +1,5 @@
+//! Exports the embedded palette lab pages into a static `dist` directory.
+
 use std::fs;
 
 const OUT_DIR: &str = "dist/ipsc_lab";

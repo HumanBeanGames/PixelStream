@@ -1,6 +1,12 @@
+//! Public Bevy resources, messages, and settings exposed by PixelStream.
+//!
+//! `DirectStream*` names are retained as compatibility aliases while downstream
+//! applications can import the exported `PixelStream*` aliases from `lib.rs`.
+
 use bevy::prelude::*;
 
 #[derive(Clone, Debug, Resource)]
+/// Extra window space requested by a downstream app for setup/editor UI.
 pub struct DirectStreamWindowLayout {
     pub right_panel_width: f32,
 }
@@ -21,12 +27,18 @@ impl DirectStreamWindowLayout {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Selects whether a stream-space overlay should use the direct or altered
+/// palette lookup table.
 pub enum DirectColorLookup {
     Direct,
     Altered,
 }
 
 #[derive(Clone, Resource)]
+/// The render target and cameras PixelStream exposes to downstream games.
+///
+/// Game cameras that should appear in the stream render into `image`. The
+/// palette/readback pipeline converts `output_image` into indexed stream frames.
 pub struct DirectStreamTarget {
     pub camera: Entity,
     pub overlay_camera: Entity,
@@ -41,6 +53,9 @@ pub struct DirectStreamTarget {
 }
 
 #[derive(Clone, Copy, Debug, Resource)]
+/// Runtime Bayer dither settings applied to captured scene pixels before
+/// palette lookup. DirectText and direct sprites can use direct lookup paths so
+/// their requested colors stay stable.
 pub struct DirectStreamDitherSettings {
     pub scale: f32,
     pub intensity: f32,
@@ -62,6 +77,8 @@ impl Default for DirectStreamDitherSettings {
 }
 
 #[derive(Clone, Resource)]
+/// Public stream state for systems that should pause or adapt when custom-host
+/// streaming is stopped.
 pub struct DirectStreamState {
     pub mode: DirectStreamMode,
     pub active: bool,
@@ -77,12 +94,14 @@ impl DirectStreamState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The active PixelStream operating mode.
 pub enum DirectStreamMode {
     Preview,
     CustomHost,
 }
 
 #[derive(Clone, Copy, Debug, Message)]
+/// Request a programmatic stream start.
 pub struct DirectStreamStartRequest {
     pub mode: DirectStreamMode,
     pub width: u32,
@@ -102,9 +121,11 @@ impl DirectStreamStartRequest {
 }
 
 #[derive(Clone, Copy, Debug, Message)]
+/// Request a programmatic stream stop.
 pub struct DirectStreamStopRequest;
 
 #[derive(Clone, Debug, Message)]
+/// Result emitted after a programmatic start/stop request is processed.
 pub struct DirectStreamControlResult {
     pub action: DirectStreamControlAction,
     pub success: bool,
@@ -112,12 +133,14 @@ pub struct DirectStreamControlResult {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Start/stop action represented in a stream-control result.
 pub enum DirectStreamControlAction {
     Start,
     Stop,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Selects how browser audio should be delayed relative to video playback.
 pub enum AudioSyncMode {
     Fixed,
     MatchEstimatedVideoLatency,
@@ -125,6 +148,7 @@ pub enum AudioSyncMode {
 }
 
 #[derive(Clone, Resource)]
+/// Runtime audio synchronization settings.
 pub struct DirectStreamAudioSyncConfig {
     pub mode: AudioSyncMode,
     pub fixed_delay_ms: u32,
@@ -159,6 +183,7 @@ impl DirectStreamAudioSyncConfig {
 }
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// System set that runs after PixelStream has created its render target.
 pub enum DirectStreamSet {
     Setup,
 }

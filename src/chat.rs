@@ -1,3 +1,9 @@
+//! Local browser chat, command routing, moderation, and viewer identity.
+//!
+//! The chat layer is deliberately local-host oriented. It supports public and
+//! viewer-scoped messages, command dispatch, TTL entries, names/colors, and
+//! basic moderation before commands reach a downstream game.
+
 use bevy::{
     app::App,
     ecs::system::{In, IntoSystem, SystemId},
@@ -10,6 +16,10 @@ use std::{
 };
 
 const LOCAL_COMMAND_CHAT_TTL_MS: u64 = 30_000;
+const LOCAL_CHAT_RATE_LIMIT_MS: u64 = 5_000;
+const LOCAL_CHAT_REPEAT_LIMIT_MS: u64 = 30_000;
+const LOCAL_CHAT_MODERATION_WARNING_TTL_MS: u64 = 10_000;
+const LOCAL_CHAT_MODERATION_WARNING_THROTTLE_MS: u64 = 2_000;
 
 #[derive(Message, Clone)]
 pub struct StreamChatMessage {
@@ -160,6 +170,7 @@ struct LocalChatState {
     generation: u64,
     names_by_identity: HashMap<String, String>,
     blocked_identities: HashMap<String, String>,
+    moderation_by_identity: HashMap<String, LocalChatModerationState>,
     name_resolver: Option<Arc<dyn Fn(&str) -> String + Send + Sync>>,
 }
 
@@ -172,9 +183,65 @@ impl Default for LocalChatState {
             generation: 0,
             names_by_identity: HashMap::new(),
             blocked_identities: HashMap::new(),
+            moderation_by_identity: HashMap::new(),
             name_resolver: None,
         }
     }
+}
+
+#[derive(Default)]
+struct LocalChatModerationState {
+    last_accepted_at_ms: u64,
+    last_warning_at_ms: u64,
+    recent_messages: VecDeque<(String, u64)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LocalChatModerationReason {
+    Link,
+    BlockedLanguage,
+    RateLimited,
+    RepeatedMessage,
+}
+
+impl LocalChatModerationReason {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Link => "link",
+            Self::BlockedLanguage => "blocked_language",
+            Self::RateLimited => "rate_limited",
+            Self::RepeatedMessage => "repeated_message",
+        }
+    }
+
+    pub(crate) fn warning_text(self, display_name: &str) -> String {
+        match self {
+            Self::Link => {
+                format!("@{display_name} Message blocked: links are not allowed in chat.")
+            }
+            Self::BlockedLanguage => {
+                format!("@{display_name} Message blocked: keep the chat clean.")
+            }
+            Self::RateLimited => {
+                format!("@{display_name} Slow down: you can send one message every 5 seconds.")
+            }
+            Self::RepeatedMessage => {
+                format!("@{display_name} Message blocked: don't repeat the same message so soon.")
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LocalChatSubmitResult {
+    Accepted {
+        display_name: String,
+    },
+    Rejected {
+        display_name: String,
+        reason: LocalChatModerationReason,
+    },
+    BlockedIdentity,
 }
 
 #[derive(Clone)]
@@ -204,15 +271,34 @@ impl LocalChatHub {
         &self,
         identity: impl AsRef<str>,
         message: impl Into<String>,
-    ) -> Option<String> {
+    ) -> LocalChatSubmitResult {
+        self.submit_at(identity, message, current_time_millis())
+    }
+
+    fn submit_at(
+        &self,
+        identity: impl AsRef<str>,
+        message: impl Into<String>,
+        now_ms: u64,
+    ) -> LocalChatSubmitResult {
         let identity_hash = local_chat_identity_hash(identity.as_ref());
-        let mut state = self.state.lock().ok()?;
+        let Ok(mut state) = self.state.lock() else {
+            return LocalChatSubmitResult::BlockedIdentity;
+        };
         if state.blocked_identities.contains_key(&identity_hash) {
-            return None;
+            return LocalChatSubmitResult::BlockedIdentity;
         }
 
         let display_name = display_name_for_identity_hash(&mut state, &identity_hash);
         let text = message.into();
+        if let Err(reason) =
+            moderate_local_chat_submission(&mut state, &identity_hash, &display_name, &text, now_ms)
+        {
+            return LocalChatSubmitResult::Rejected {
+                display_name,
+                reason,
+            };
+        }
         let ttl_ms = parse_stream_command(&text).map(|_| LOCAL_COMMAND_CHAT_TTL_MS);
         let entry = LocalChatEntry {
             id: state.next_id,
@@ -235,7 +321,7 @@ impl LocalChatHub {
         });
         state.history.push_back(entry);
         trim_history(&mut state);
-        Some(display_name)
+        LocalChatSubmitResult::Accepted { display_name }
     }
 
     pub(crate) fn entries_after(
@@ -370,6 +456,195 @@ impl LocalChatHub {
             Vec::new()
         }
     }
+}
+
+fn moderate_local_chat_submission(
+    state: &mut LocalChatState,
+    identity_hash: &str,
+    display_name: &str,
+    text: &str,
+    now_ms: u64,
+) -> Result<(), LocalChatModerationReason> {
+    let reason = if contains_disallowed_link(text) {
+        Some(LocalChatModerationReason::Link)
+    } else if contains_blocked_language(text) {
+        Some(LocalChatModerationReason::BlockedLanguage)
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        append_moderation_warning_locked(state, identity_hash, display_name, reason, now_ms);
+        return Err(reason);
+    }
+
+    let normalized = normalize_spam_text(text);
+    let moderation = state
+        .moderation_by_identity
+        .entry(identity_hash.to_owned())
+        .or_default();
+    moderation
+        .recent_messages
+        .retain(|(_, sent_at)| now_ms.saturating_sub(*sent_at) < LOCAL_CHAT_REPEAT_LIMIT_MS);
+
+    if moderation.last_accepted_at_ms != 0
+        && now_ms.saturating_sub(moderation.last_accepted_at_ms) < LOCAL_CHAT_RATE_LIMIT_MS
+    {
+        let reason = LocalChatModerationReason::RateLimited;
+        append_moderation_warning_locked(state, identity_hash, display_name, reason, now_ms);
+        return Err(reason);
+    }
+
+    if moderation
+        .recent_messages
+        .iter()
+        .any(|(message, _)| message == &normalized)
+    {
+        let reason = LocalChatModerationReason::RepeatedMessage;
+        append_moderation_warning_locked(state, identity_hash, display_name, reason, now_ms);
+        return Err(reason);
+    }
+
+    moderation.last_accepted_at_ms = now_ms;
+    moderation.recent_messages.push_back((normalized, now_ms));
+    Ok(())
+}
+
+fn append_moderation_warning_locked(
+    state: &mut LocalChatState,
+    identity_hash: &str,
+    display_name: &str,
+    reason: LocalChatModerationReason,
+    now_ms: u64,
+) {
+    let should_warn = {
+        let moderation = state
+            .moderation_by_identity
+            .entry(identity_hash.to_owned())
+            .or_default();
+        if moderation.last_warning_at_ms != 0
+            && now_ms.saturating_sub(moderation.last_warning_at_ms)
+                < LOCAL_CHAT_MODERATION_WARNING_THROTTLE_MS
+        {
+            false
+        } else {
+            moderation.last_warning_at_ms = now_ms;
+            true
+        }
+    };
+    if !should_warn {
+        return;
+    }
+
+    let text = reason.warning_text(display_name);
+    let entry = LocalChatEntry {
+        id: state.next_id,
+        user: "system".to_owned(),
+        display_name: "system".to_owned(),
+        mentions: mentions_from_text(&text),
+        text,
+        created_at_ms: now_ms,
+        ttl_ms: Some(LOCAL_CHAT_MODERATION_WARNING_TTL_MS),
+        audience: ChatAudience::ViewerIdentity(identity_hash.to_owned()),
+        display_name_color: None,
+        message_color: Some("orange".to_owned()),
+        css_class: Some("moderation-warning".to_owned()),
+    };
+    state.next_id = state.next_id.wrapping_add(1);
+    state.history.push_back(entry);
+    trim_history(state);
+}
+
+fn contains_disallowed_link(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("http://")
+        || lower.contains("https://")
+        || lower.contains("www.")
+        || text.split_whitespace().any(token_looks_like_link)
+}
+
+fn token_looks_like_link(token: &str) -> bool {
+    let trimmed = token.trim_matches(|ch: char| {
+        !ch.is_ascii_alphanumeric() && !matches!(ch, '.' | '-' | '_' | '@' | ':' | '/' | '?' | '#')
+    });
+    if trimmed.contains('@') && trimmed.contains('.') {
+        return true;
+    }
+    let domain = trimmed
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(trimmed)
+        .split(':')
+        .next()
+        .unwrap_or(trimmed)
+        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && !matches!(ch, '.' | '-'));
+    if !domain.contains('.') || domain.len() > 253 {
+        return false;
+    }
+    let labels = domain.split('.').collect::<Vec<_>>();
+    let Some(tld) = labels.last() else {
+        return false;
+    };
+    labels.len() >= 2
+        && tld.len() >= 2
+        && tld.len() <= 24
+        && tld.bytes().all(|byte| byte.is_ascii_alphabetic())
+        && labels.iter().all(|label| {
+            !label.is_empty()
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
+fn contains_blocked_language(text: &str) -> bool {
+    text.split(|ch: char| !ch.is_alphanumeric())
+        .map(|word| word.trim().to_ascii_lowercase())
+        .any(|word| !word.is_empty() && BLOCKED_CHAT_WORDS.contains(&word.as_str()))
+}
+
+const BLOCKED_CHAT_WORDS: &[&str] = &[
+    "arsehole",
+    "asshole",
+    "bastard",
+    "bitch",
+    "bollocks",
+    "chink",
+    "coon",
+    "cunt",
+    "dickhead",
+    "dyke",
+    "fag",
+    "faggot",
+    "fuck",
+    "fucked",
+    "fucker",
+    "fucking",
+    "gook",
+    "kike",
+    "motherfucker",
+    "nigga",
+    "nigger",
+    "paki",
+    "prick",
+    "raghead",
+    "retard",
+    "shit",
+    "shitty",
+    "spic",
+    "tranny",
+    "twat",
+    "wanker",
+    "wetback",
+    "whore",
+];
+
+fn normalize_spam_text(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
 }
 
 #[derive(Resource, Default)]
@@ -815,7 +1090,7 @@ mod tests {
     fn non_command_local_chat_entries_do_not_expire() {
         let hub = LocalChatHub::default();
 
-        hub.submit("device:test-device", "hello market").unwrap();
+        assert_accepted(hub.submit_at("device:test-device", "hello market", 10_000));
         let entries = hub.entries_after(0, None, None);
 
         assert_eq!(entries.len(), 1);
@@ -826,10 +1101,92 @@ mod tests {
     fn command_local_chat_entries_expire() {
         let hub = LocalChatHub::default();
 
-        hub.submit("device:test-device", "!where").unwrap();
+        assert_accepted(hub.submit_at("device:test-device", "!where", 10_000));
         let entries = hub.entries_after(0, None, None);
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].ttl_ms, Some(LOCAL_COMMAND_CHAT_TTL_MS));
+    }
+
+    #[test]
+    fn local_chat_blocks_links_without_echoing_them() {
+        let hub = LocalChatHub::default();
+        let now_ms = current_time_millis();
+
+        assert_rejected(
+            hub.submit_at("device:test-device", "visit example.com", now_ms),
+            LocalChatModerationReason::Link,
+        );
+
+        let (viewer_identity, viewer_name) = hub.viewer_for_identity("device:test-device");
+        let entries = hub.entries_after(0, Some(&viewer_identity), Some(&viewer_name));
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].text.contains("links are not allowed"));
+        assert!(!entries[0].text.contains("example.com"));
+        assert!(hub.drain().is_empty());
+    }
+
+    #[test]
+    fn local_chat_blocks_profanity_without_dispatching() {
+        let hub = LocalChatHub::default();
+        let now_ms = current_time_millis();
+
+        assert_rejected(
+            hub.submit_at("device:test-device", "what the fuck", now_ms),
+            LocalChatModerationReason::BlockedLanguage,
+        );
+
+        let (viewer_identity, viewer_name) = hub.viewer_for_identity("device:test-device");
+        let entries = hub.entries_after(0, Some(&viewer_identity), Some(&viewer_name));
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].text.contains("keep the chat clean"));
+        assert!(hub.drain().is_empty());
+    }
+
+    #[test]
+    fn local_chat_rate_limits_fast_messages() {
+        let hub = LocalChatHub::default();
+
+        assert_accepted(hub.submit_at("device:test-device", "first", 10_000));
+        assert_rejected(
+            hub.submit_at("device:test-device", "second", 12_000),
+            LocalChatModerationReason::RateLimited,
+        );
+
+        assert_eq!(hub.drain().len(), 1);
+    }
+
+    #[test]
+    fn local_chat_blocks_repeated_messages_within_window() {
+        let hub = LocalChatHub::default();
+
+        assert_accepted(hub.submit_at("device:test-device", "Hello there", 10_000));
+        assert_accepted(hub.submit_at("device:test-device", "Something else", 16_000));
+        assert_rejected(
+            hub.submit_at("device:test-device", "  hello   there  ", 22_000),
+            LocalChatModerationReason::RepeatedMessage,
+        );
+    }
+
+    #[test]
+    fn local_chat_allows_repeated_messages_after_window() {
+        let hub = LocalChatHub::default();
+
+        assert_accepted(hub.submit_at("device:test-device", "Hello there", 10_000));
+        assert_accepted(hub.submit_at("device:test-device", "Hello there", 41_000));
+    }
+
+    fn assert_accepted(result: LocalChatSubmitResult) -> String {
+        match result {
+            LocalChatSubmitResult::Accepted { display_name } => display_name,
+            other => panic!("expected accepted chat submission, got {other:?}"),
+        }
+    }
+
+    fn assert_rejected(result: LocalChatSubmitResult, expected: LocalChatModerationReason) {
+        match result {
+            LocalChatSubmitResult::Rejected { reason, .. } => assert_eq!(reason, expected),
+            other => panic!("expected rejected chat submission, got {other:?}"),
+        }
     }
 }

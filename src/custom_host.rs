@@ -1,3 +1,9 @@
+//! Custom-host data models and thread-safe hubs.
+//!
+//! These resources let a downstream Bevy app publish browser chat panels,
+//! overlays, pointer-clicks, panel actions, and branding/layout state without
+//! depending on the hand-written HTTP implementation directly.
+
 use bevy::prelude::*;
 use std::{
     collections::BTreeMap,
@@ -115,8 +121,8 @@ pub struct CustomHostBranding {
 impl Default for CustomHostBranding {
     fn default() -> Self {
         Self {
-            page_title: "Direct Stream Game".to_owned(),
-            header_title: "Direct Stream Game custom palette stream".to_owned(),
+            page_title: "PixelStream".to_owned(),
+            header_title: "PixelStream custom palette stream".to_owned(),
         }
     }
 }
@@ -130,23 +136,12 @@ impl CustomHostBranding {
     }
 }
 
-#[derive(Clone, Resource)]
+#[derive(Clone, Default, Resource)]
 pub struct CustomHostLayout {
     pub max_player_width_px: Option<u32>,
     pub prefer_larger_player: bool,
     pub minimizable_player: bool,
     pub start_player_minimized: bool,
-}
-
-impl Default for CustomHostLayout {
-    fn default() -> Self {
-        Self {
-            max_player_width_px: None,
-            prefer_larger_player: false,
-            minimizable_player: false,
-            start_player_minimized: false,
-        }
-    }
 }
 
 impl CustomHostLayout {

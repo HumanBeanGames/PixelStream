@@ -1,3 +1,9 @@
+//! Stream audio decoding, buffering, delay, and transport.
+//!
+//! Downstream games submit whole clips or one-shot sounds. PixelStream converts
+//! them into a compact PCM packet stream that the browser schedules to align
+//! with delayed video playback.
+
 use crate::constants::{
     CUSTOM_AUDIO_SAMPLE_RATE, STREAM_AUDIO_BUFFER_SECONDS, STREAM_AUDIO_CHANNELS,
     STREAM_AUDIO_MAX_MIX_FRAMES_PER_UPDATE, STREAM_AUDIO_SAMPLE_RATE,
@@ -383,7 +389,7 @@ fn decode_wav_samples(data: &[u8], format: WavFormat) -> Result<Vec<f32>, String
         .checked_div(8)
         .filter(|bytes| *bytes > 0)
         .ok_or_else(|| "WAV bits per sample must be byte-aligned".to_owned())?;
-    if data.len() % bytes_per_sample != 0 {
+    if !data.len().is_multiple_of(bytes_per_sample) {
         return Err("WAV data chunk is not sample-aligned".to_owned());
     }
 

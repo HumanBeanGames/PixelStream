@@ -1,3 +1,5 @@
+// Displays the palette-quantized preview image in the PixelStream preview UI.
+
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
 
 struct PaletteParams {

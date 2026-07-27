@@ -1,3 +1,5 @@
+// Converts captured scene colors into palette indices through the IPSMAP lookup.
+
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
 
 struct PaletteParams {

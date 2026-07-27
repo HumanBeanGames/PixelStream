@@ -1,3 +1,8 @@
+//! Raw frame handoff types and downstream frame-processor hooks.
+//!
+//! Frame processors are the last CPU-side extension point before preview or
+//! custom-host encoding consumes a captured image.
+
 use crate::stats::SharedStats;
 use bevy::prelude::*;
 use crossbeam_channel::Sender;

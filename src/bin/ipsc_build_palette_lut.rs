@@ -1,4 +1,6 @@
-use direct_stream_game::palette_lut::{
+//! Command-line IPSMAP builder for palette authoring pipelines.
+
+use pixel_stream::palette_lut::{
     build_lookup, load_palette_config, sibling_lut_path, write_lookup,
 };
 use std::{env, path::PathBuf, time::Instant};

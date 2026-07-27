@@ -1,3 +1,5 @@
+//! Local HTTP launcher for the combined IPSC palette/converter lab.
+
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
