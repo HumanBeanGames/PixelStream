@@ -15,6 +15,10 @@ Focused API docs:
 - [Stream Settings](docs/STREAM_SETTINGS.md)
 - [Generic Settings Crate](crates/pixel_stream_settings/README.md)
 
+## Minimal Example Project
+
+[PixelStream Chat Dash](https://github.com/HumanBeanGames/PixelStream-Chat-Dash) is a small downstream game that uses PixelStream and `pixel_stream_settings` as remote Git dependencies. It demonstrates browser chat commands changing the streamed game, viewer-scoped game replies in chat, global score announcements, and live side-panel updates.
+
 ## What It Provides
 
 - Bevy `0.19` app shell with a dedicated stream render target.
